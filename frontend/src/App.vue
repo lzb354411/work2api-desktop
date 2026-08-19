@@ -7,7 +7,7 @@ const wails = () => window.go?.main?.API
 const tab = ref('dashboard')
 const dash = ref(null)
 const accounts = ref([])
-const settings = reactive({ port: 8317, defaultProvider: 'auto', checkinEnabled: true, checkinTime: '09:05', startMinimized: false, autoStart: false, traeEnabled: true, wbEnabled: true, creditFloor: 0 })
+const settings = reactive({ port: 8317, defaultProvider: 'auto', checkinEnabled: true, checkinTime: '09:05', startMinimized: false, autoStart: false, traeEnabled: true, wbEnabled: true, creditFloor: 0, traeCheckinMethod: 'browser', traeWebAccountCount: 3 })
 const logs = ref([])
 const toast = ref('')
 let toastTimer = null
@@ -62,14 +62,14 @@ async function refreshLogs() {
 
 let pollTimer = null
 onMounted(async () => {
-  await Promise.all([refreshDash(), refreshAccounts(), refreshLogs()])
+  await Promise.all([refreshDash(), refreshAccounts(), refreshLogs(), refreshTraeWeb()])
   // 加载设置
   try {
     const s = await wails().GetSettings()
     Object.assign(settings, s)
   } catch {}
   pollTimer = setInterval(async () => {
-    await Promise.all([refreshDash(), refreshAccounts()])
+    await Promise.all([refreshDash(), refreshAccounts(), refreshTraeWeb()])
   }, 5000)
   // 日志事件推送
   window.runtime?.EventsOn('log', (e) => {
@@ -218,6 +218,37 @@ function openLoginUrl() {
   wails()?.OpenURL(loginModal.url)
 }
 
+// ---------- Trae 网页签到（浏览器引擎，独立于 OAuth 账号） ----------
+const traeWeb = ref([])
+async function refreshTraeWeb() {
+  try { traeWeb.value = await wails().TraeWebStatus() } catch {}
+}
+const todayStr = () => {
+  const t = new Date()
+  return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`
+}
+// 网页登录：启动有头 Edge 让用户输入手机+验证码（最长 5 分钟）
+async function startTraeWebLogin(i) {
+  showToast(`请在弹出的 Edge 窗口用手机+验证码登录账号 ${i}（最多 5 分钟）`)
+  try {
+    await wails().StartTraeWebLogin(i)
+    showToast(`账号 ${i} 登录成功，会话已保存`)
+  } catch (e) {
+    showToast('网页登录未成功: ' + (e?.message || e))
+  }
+  refreshTraeWeb()
+}
+// 手动签到单个网页账号
+async function checkinTraeWeb(i) {
+  try {
+    const msg = await wails().CheckinTraeWebNow(i)
+    showToast(`账号 ${i}: ${msg || '完成'}`)
+  } catch (e) {
+    showToast('网页签到失败: ' + (e?.message || e))
+  }
+  refreshTraeWeb()
+}
+
 // ---------- 设置 ----------
 async function saveSettings() {
   // 积分阈值：空输入/非法值归零（0 = 不限制）
@@ -264,6 +295,7 @@ function hideToTray() { wails()?.HideToTray() }
       <div class="nav-item" :class="{ active: tab === 'dashboard' }" @click="switchTab('dashboard')">仪表盘</div>
       <div class="nav-item" :class="{ active: tab === 'accounts' }" @click="switchTab('accounts')">账号管理</div>
       <div class="nav-item" :class="{ active: tab === 'models' }" @click="switchTab('models')">模型</div>
+      <div class="nav-item" :class="{ active: tab === 'traeweb' }" @click="switchTab('traeweb')">网页签到</div>
       <div class="nav-item" :class="{ active: tab === 'settings' }" @click="switchTab('settings')">设置</div>
       <div class="spacer"></div>
       <div class="nav-item" @click="hideToTray">隐藏到托盘</div>
@@ -423,6 +455,46 @@ function hideToTray() { wails()?.HideToTray() }
       </p>
     </main>
 
+    <!-- 网页签到 -->
+    <main v-else-if="tab === 'traeweb'" class="main">
+      <div class="row" style="margin-bottom:16px">
+        <h2 class="grow">Trae 网页签到</h2>
+        <button class="btn ghost" @click="refreshTraeWeb">刷新状态</button>
+      </div>
+      <div class="card" style="margin-bottom:16px; background:var(--bg-soft)">
+        本功能通过系统 <b>Edge 浏览器</b> 驱动网页端签到，绕过桌面客户端 TTNet 签名限制（纯 HTTP 会被 9074 拒绝）。
+        每个账号只需<b>首次</b>用「手机 + 验证码」登录一次，会话独立保存在应用数据目录，之后每日自动签到无需再输入。
+      </div>
+      <div class="card" style="padding:0">
+        <table v-if="traeWeb.length > 0">
+          <thead>
+            <tr><th>账号</th><th>登录状态</th><th>最近签到</th><th style="width:240px">操作</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="w in traeWeb" :key="w.index">
+              <td>账号 {{ w.index }}</td>
+              <td>
+                <span v-if="w.loggedIn" class="badge ok">已登录</span>
+                <span v-else class="badge dead">未登录（需首次登录）</span>
+              </td>
+              <td>
+                <span v-if="w.lastCheckin === todayStr()" class="badge ok">今日已签</span>
+                <span v-else-if="w.lastCheckin" style="font-size:12px">{{ w.lastCheckin }}</span>
+                <span v-else style="color:var(--text-dim);font-size:12px">—</span>
+              </td>
+              <td>
+                <div class="row" style="gap:6px">
+                  <button class="btn sm ghost" @click="startTraeWebLogin(w.index)">{{ w.loggedIn ? '重新登录' : '网页登录' }}</button>
+                  <button class="btn sm ghost" :disabled="!w.loggedIn" @click="checkinTraeWeb(w.index)">签到</button>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="empty">暂无网页账号（默认 3 个，可在设置中调整）</div>
+      </div>
+    </main>
+
     <!-- 设置 -->
     <main v-else class="main">
       <h2>设置</h2>
@@ -453,6 +525,17 @@ function hideToTray() { wails()?.HideToTray() }
         <div class="form-item" v-if="settings.checkinEnabled">
           <label>签到时间</label>
           <input type="time" v-model="settings.checkinTime" />
+        </div>
+        <div class="form-item">
+          <label>Trae 签到方式</label>
+          <select v-model="settings.traeCheckinMethod">
+            <option value="browser">浏览器（推荐，驱动系统 Edge 绕开 TTNet）</option>
+            <option value="http">纯 HTTP（旧版，会返回 9074 假失败）</option>
+          </select>
+        </div>
+        <div class="form-item" v-if="settings.traeCheckinMethod === 'browser'">
+          <label>网页签到账号数（隔离 profile 个数，对应你有几个 Trae 账号）</label>
+          <input type="number" v-model.number="settings.traeWebAccountCount" min="1" max="10" />
         </div>
         <div class="form-item">
           <label>启动时最小化到托盘</label>

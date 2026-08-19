@@ -15,7 +15,7 @@ import (
 )
 
 // Version 应用版本。
-const Version = "1.2.0"
+const Version = "1.3.0"
 
 // Config 应用配置（整体 DPAPI 加密落盘为 config.dat）。
 type Config struct {
@@ -28,6 +28,11 @@ type Config struct {
 	AutoStart        bool     `json:"autoStart"`        // 开机自动启动（HKCU Run 注册表）
 	CreditFloor      int64    `json:"creditFloor"`      // 积分保留阈值：账号余额 <= 该值时暂停挑号（0 = 不限制）
 	DisabledProviders []string `json:"disabledProviders"` // 被禁用的上游（UI 开关关闭；缺省=全部启用）
+
+	// Trae 签到方式：browser（默认，驱动系统 Edge 绕过 TTNet）| http（旧版纯 HTTP，会 9074）
+	TraeCheckinMethod string `json:"traeCheckinMethod"`
+	// Trae 网页签到账号数（隔离 profile 个数，对应你有几个 Trae 账号）
+	TraeWebAccountCount int `json:"traeWebAccountCount"`
 }
 
 // ProviderEnabled 上游是否启用（未列入 DisabledProviders 即启用）。
@@ -125,11 +130,13 @@ func DataDir() (string, error) {
 
 func defaultConfig() *Config {
 	return &Config{
-		Port:            8317,
-		DefaultProvider: "auto",
-		CheckinEnabled:  true,
-		CheckinTime:     "09:05",
-		AutoStart:       false,
+		Port:                8317,
+		DefaultProvider:     "auto",
+		CheckinEnabled:      true,
+		CheckinTime:         "09:05",
+		AutoStart:           false,
+		TraeCheckinMethod:   "browser",
+		TraeWebAccountCount: 3,
 	}
 }
 
@@ -172,6 +179,14 @@ func LoadConfig(path string) (*Config, error) {
 	// 积分保留阈值：负数视为未启用（0 = 不限制）
 	if cfg.CreditFloor < 0 {
 		cfg.CreditFloor = 0
+	}
+	// Trae 签到方式：空 → browser（默认）；非 browser/http → 强制 browser
+	if cfg.TraeCheckinMethod != "http" {
+		cfg.TraeCheckinMethod = "browser"
+	}
+	// 网页签到账号数：非法值 → 3
+	if cfg.TraeWebAccountCount <= 0 || cfg.TraeWebAccountCount > 10 {
+		cfg.TraeWebAccountCount = 3
 	}
 	return cfg, nil
 }

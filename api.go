@@ -43,6 +43,8 @@ type SettingsDTO struct {
 	TraeEnabled     bool   `json:"traeEnabled"`
 	WBEnabled       bool   `json:"wbEnabled"`
 	CreditFloor     int64  `json:"creditFloor"`
+	TraeCheckinMethod   string `json:"traeCheckinMethod"`   // browser | http
+	TraeWebAccountCount int    `json:"traeWebAccountCount"` // 网页签到账号数
 }
 
 // ModelsDTO 各上游模型列表视图。
@@ -93,6 +95,8 @@ func (a *API) GetSettings() SettingsDTO {
 		TraeEnabled:     cfg.ProviderEnabled(auth.ProviderTrae),
 		WBEnabled:       cfg.ProviderEnabled(auth.ProviderWorkBuddy),
 		CreditFloor:     cfg.CreditFloor,
+		TraeCheckinMethod:   cfg.TraeCheckinMethod,
+		TraeWebAccountCount: cfg.TraeWebAccountCount,
 	}
 }
 
@@ -107,6 +111,14 @@ func (a *API) SaveSettings(s SettingsDTO) (bool, error) {
 	// 积分保留阈值：负数拒绝（0 = 不限制）
 	if s.CreditFloor < 0 {
 		return false, errString("积分保留阈值不能为负数（0 = 不限制）")
+	}
+	// Trae 签到方式：仅允许 browser / http
+	if s.TraeCheckinMethod != "browser" && s.TraeCheckinMethod != "http" {
+		return false, errString("Trae 签到方式必须是 browser 或 http")
+	}
+	// 网页签到账号数：1-10
+	if s.TraeWebAccountCount < 1 || s.TraeWebAccountCount > 10 {
+		return false, errString("网页签到账号数必须在 1-10 之间")
 	}
 	// 上游开关：两个都关会没有任何可用账号，前端已提示，这里仍允许（用户自己负责）
 	var disabled []string
@@ -125,6 +137,8 @@ func (a *API) SaveSettings(s SettingsDTO) (bool, error) {
 		AutoStart:         s.AutoStart,
 		CreditFloor:       s.CreditFloor,
 		DisabledProviders: disabled,
+		TraeCheckinMethod:   s.TraeCheckinMethod,
+		TraeWebAccountCount: s.TraeWebAccountCount,
 	}
 	return a.core.UpdateConfig(nc)
 }
@@ -201,6 +215,21 @@ func (a *API) CheckinNow(provider, uid string) (string, error) {
 // CheckinAllNow 一键全签所有账号，返回统计摘要。
 func (a *API) CheckinAllNow() (string, error) {
 	return a.core.CheckinAllNow()
+}
+
+// StartTraeWebLogin 发起某网页账号的首次登录（有头 Edge，手机+验证码）。
+func (a *API) StartTraeWebLogin(index int) error {
+	return a.core.StartTraeWebLogin(index)
+}
+
+// CheckinTraeWebNow 手动签到单个网页账号。
+func (a *API) CheckinTraeWebNow(index int) (string, error) {
+	return a.core.CheckinTraeWebNow(index)
+}
+
+// TraeWebStatus 各网页账号登录态与最近签到日期。
+func (a *API) TraeWebStatus() []map[string]any {
+	return a.core.TraeWebStatus()
 }
 
 // RefreshCreditsNow 手动刷新积分。
