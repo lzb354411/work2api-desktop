@@ -1,0 +1,31 @@
+# 敏感数据 —— 绝不提交
+accounts.dat
+config.dat
+key.dat
+*.key
+*.pem
+*.token
+.env
+config.json
+logs/
+data/
+*.log
+
+# 构建产物
+build/bin/
+frontend/dist/
+frontend/node_modules/
+frontend/wailsjs/
+frontend/package.json.md5
+
+# 工具链（本地便携版）
+.tools/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+Thumbs.db
