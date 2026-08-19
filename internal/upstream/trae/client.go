@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -390,6 +391,7 @@ func (c *Client) FetchModels(a *auth.Account) ([]ModelInfo, error) {
 }
 
 // CheckinStatus 查询签到状态。raw 返回原始响应（截断），供诊断日志。
+// 业务码 code!=0 视为状态查询失败（checked_in/credits/enable 不可信），返回错误而非零值误判。
 func (c *Client) CheckinStatus(a *auth.Account) (checkedIn bool, credits int64, enable bool, raw string, err error) {
 	req, err := http.NewRequest(http.MethodPost, c.UgHost+EpCheckinStatus, bytes.NewReader([]byte("{}")))
 	if err != nil {
@@ -401,17 +403,31 @@ func (c *Client) CheckinStatus(a *auth.Account) (checkedIn bool, credits int64, 
 		return false, 0, false, "", err
 	}
 	var resp struct {
-		CheckedIn bool  `json:"checked_in"`
-		Credits   int64 `json:"credits"`
-		Enable    bool  `json:"enable"`
+		CheckedIn bool   `json:"checked_in"`
+		Credits   int64  `json:"credits"`
+		Enable    bool   `json:"enable"`
+		Code      int    `json:"code"`
+		Message   string `json:"message"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return false, 0, false, truncate(string(data), 300), fmt.Errorf("checkin status parse: %w", err)
 	}
-	return resp.CheckedIn, resp.Credits, resp.Enable, truncate(string(data), 300), nil
+	raw = truncate(string(data), 300)
+	if resp.Code != 0 {
+		msg := resp.Message
+		if msg == "" {
+			msg = fmt.Sprintf("code=%d", resp.Code)
+		}
+		return false, 0, false, raw, fmt.Errorf("checkin status failed: %s", msg)
+	}
+	return resp.CheckedIn, resp.Credits, resp.Enable, raw, nil
 }
 
+// ErrCheckinBusy 签到领取瞬时繁忙（code=9074 参与用户太多），可稍后重试。
+var ErrCheckinBusy = errors.New("checkin busy")
+
 // CheckinClaim 执行签到。raw 返回原始响应（截断），供诊断日志。
+// 业务码 code!=0 视为领取失败，返回真实结果而非"假成功"；9074 映射为 ErrCheckinBusy。
 func (c *Client) CheckinClaim(a *auth.Account) (raw string, err error) {
 	req, err := http.NewRequest(http.MethodPost, c.UgHost+EpCheckinClaim, bytes.NewReader([]byte("{}")))
 	if err != nil {
@@ -422,7 +438,25 @@ func (c *Client) CheckinClaim(a *auth.Account) (raw string, err error) {
 	if err != nil {
 		return "", err
 	}
-	return truncate(string(data), 300), nil
+	var resp struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return truncate(string(data), 300), fmt.Errorf("checkin claim parse: %w", err)
+	}
+	raw = truncate(string(data), 300)
+	if resp.Code != 0 {
+		msg := resp.Message
+		if msg == "" {
+			msg = fmt.Sprintf("code=%d", resp.Code)
+		}
+		if resp.Code == 9074 {
+			return raw, fmt.Errorf("%w：%s", ErrCheckinBusy, msg)
+		}
+		return raw, fmt.Errorf("checkin claim failed: %s", msg)
+	}
+	return raw, nil
 }
 
 // UserEntUsage 聚合剩余积分：remain = Σ(credits_limit - usage.credits_amount)。

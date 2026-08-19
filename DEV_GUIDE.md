@@ -1,6 +1,6 @@
 # Work2API Desktop 开发文档
 
-> 适用版本：v1.0.0 ｜ 平台：Windows 10/11 ｜ 技术栈：Go 1.23 + Wails 2.10 + Vue 3 + systray
+> 适用版本：v1.2.0 ｜ 平台：Windows 10/11 ｜ 技术栈：Go 1.23 + Wails 2.10 + Vue 3 + systray
 
 本文档面向二次开发者，描述项目分层架构、关键数据流、安全设计与扩展点。终端用户使用说明见 [README.md](./README.md)。
 
@@ -373,8 +373,22 @@ glm-5.2       → defaultProvider (auto 跨上游挑)
 - `UgHeaders`：签到/积分，含 `X-User-Region: CN`
 - `OAuthHeaders`：token 交换，仅 UA（无签名）
 
-**积分计算**（[internal/upstream/trae/client.go#UserEntUsage](internal/upstream/trae/client.go)）：
-`ide_user_ent_usage` 每个权益包返回 `quota.credits_limit`（总额度）与 `usage.credits_amount`（已用积分），剩余积分 = `Σ(limit - used)`，负数截断为 0。**注意：只累加 `credits_limit` 是错误实现**（原版 `internal/upstream/client.go` 的已知 bug），会把已耗尽的账号误显示为满额度。
+**积分计算**（[internal/upstream/trae/client.go](internal/upstream/trae/client.go)）：
+界面显示的 TRAE 积分 = **权益包剩余额度 + 签到积分池**（两套独立积分体系）：
+- 权益包剩余：`ide_user_ent_usage` 每个权益包返回 `quota.credits_limit`（总额度）与 `usage.credits_amount`（已用积分），剩余 = `Σ(limit - used)`，负数截断为 0。**注意：只累加 `credits_limit` 是错误实现**（原版 `internal/upstream/client.go` 的已知 bug），会把已耗尽的账号误显示为满额度。
+- 签到积分池：由 `checkin_credits/status` 的 `credits` 字段取得；`fetchCredits` 中该查询失败时降级只返回权益包额度，不阻断显示。
+
+**签到**（[client.go#CheckinStatus/CheckinClaim](internal/upstream/trae/client.go)）：
+- 状态与领取均校验业务码 `code`：`code != 0` 视为失败并返回真实错误（HTTP 200 不再被误判为"签到成功"）。**历史 bug**：原版 traework2api 的 `CheckinClaim` 不校验 `code`，把 HTTP 200 当成功 → 长期"假签到成功"，本桌面版已修复。
+- `claim` 返回 `code=9074`（"当前参与用户太多，请稍后再试"）时映射为哨兵错误 `ErrCheckinBusy`；`checkinOne` 收到后最多重试 3 次、间隔 5 秒（常量 `checkinClaimRetries`/`checkinClaimRetryWait`），仍失败则如实上报；其余错误码直接上报。
+
+> **⚠️ TRAE 签到 9074 的根因与不可修复性（实测结论，2026-08）**
+>
+> `claim` 端点对 `x-device-id` 做 **ByteDance AHA 设备注册校验**。官方 Trae Work 客户端（`TRAE SOLO CN`，含 `aha_*.dll`/`metasecml.dll` 原生 AHA SDK）在启动/登录时通过 `iCubeDeviceRegister` 把设备指纹注册到字节侧，`storage.json` 中 `has_device_id_updated_to_aha: true` 即此流程的标记；其 `claim` 走 Electron `net.fetch` 普通 HTTPS（**无签名、无 cookie**，仅 `Content-Type`/`Authorization`/`x-device-id`/`x-device-brand`/`x-device-type`），能成功。
+>
+> 本应用（以及任何 traework2api 衍生项目）的登录流程在 `login.go#BuildLoginURL` 生成的是**随机未注册** `device_id`；用此 id 调 `claim` 恒返回 `code=9074`（实测：3 账号 × 多次重试、换官方 `telemetry.machineId`、补全全部 SOLO 头均无效；`status` 因不校验设备注册而正常）。AHA 注册走私有原生 SDK，**无 HTTP 端点可替代**，故 TRAE 签到**无法在第三方纯 Go 客户端中真正成功**。
+>
+> 应对：`CheckinClaim` 已如实返回 9074 错误（不再假成功），UI 会显示真实原因；如需实际领取签到积分，请在官方 Trae Work 客户端中完成。`status` 查询与权益包额度（`UserEntUsage`）仍可正常用于积分展示。
 
 **PrepareBody** ([internal/upstream/trae/payload.go](internal/upstream/trae/payload.go))：OpenAI → SOLO 改写
 - `stream=true` 强制（非流式由 server 端聚合）
@@ -416,7 +430,7 @@ glm-5.2       → defaultProvider (auto 跨上游挑)
 单文件 [App.vue](frontend/src/App.vue)，无路由无状态库：
 - **侧栏导航**：仪表盘 / 账号管理 / 设置 / 隐藏到托盘
 - **仪表盘**：4 项统计 + DeepSeek Harness 接入卡片 + 脱敏日志流
-- **账号管理**：登录按钮（TRAE/WB）、一键全签、列表（签到/积分/恢复/删除）；签到返回真实结果（成功/已签到/未生效），TRAE 原始响应记入日志
+- **账号管理**：登录按钮（TRAE/WB）、一键全签、列表（签到/积分/恢复/删除）；签到返回真实结果（成功/已签到/未生效/领取失败，9074 自动重试），TRAE 原始响应记入日志
 - **设置**：端口、默认上游、积分保留阈值、签到开关与时间、启动最小化、开机自启动（HKCU Run 注册表）
 - **模型页**：两上游模型列表（动态拉取 + 真实上下文窗口）、模型 ID 一键复制（带前缀可直填 Agent）、上游启用开关（关闭后不消耗其积分）；空模型名请求由 server 内置回退 DeepSeek v4 flash 正式版
 - **登录弹窗**：5min 超时倒计时、轮询 PollLoginStatus（2.5s 间隔）
@@ -531,6 +545,10 @@ const (
     refreshEvery = 5 * time.Minute   // token 检查频率
     creditsEvery = 30 * time.Minute  // 积分刷新频率
     errCooldown  = 10 * time.Minute  // 刷新失败冷却
+
+    // 签到领取瞬时繁忙(9074)时的重试：次数与间隔
+    checkinClaimRetries   = 3
+    checkinClaimRetryWait = 5 * time.Second
 )
 ```
 
@@ -551,7 +569,7 @@ const (
 
 | 常量             | 值                                   | 位置 |
 |------------------|--------------------------------------|------|
-| Version          | `1.0.0`                              | `app/config.go` |
+| Version          | `1.2.0`                              | `app/config.go` |
 | 默认端口         | `8317`                               | `app/config.go` |
 | 默认签到时间     | `09:05`                              | `app/config.go` |
 | API Key 长度     | 32 字符 hex（16 字节随机）           | `app/config.go#GenerateAPIKey` |
@@ -561,6 +579,7 @@ const (
 | hardCooldown     | 12h                                  | `server/server.go` |
 | softCooldown     | 60s                                  | `server/server.go` |
 | streamIdleTimeout| 5min                                 | `upstream/trae/client.go` |
+| 签到繁忙重试     | 3 次 × 5s                            | `app/core.go` |
 | TRAE ClientID    | `en1oxy7wnw8j9n`                     | `upstream/trae/constants.go` |
 | WB ClientUA      | `CLI/2.63.2 CodeBuddy/2.63.2`        | `upstream/workbuddy/constants.go` |
 | secrets magic    | `W2AE1\x00`                          | `secrets/secrets.go` |

@@ -266,6 +266,10 @@ const (
 	refreshEvery = 5 * time.Minute
 	creditsEvery = 30 * time.Minute
 	errCooldown  = 10 * time.Minute
+
+	// 签到领取瞬时繁忙(9074)时的重试：次数与间隔
+	checkinClaimRetries   = 3
+	checkinClaimRetryWait = 5 * time.Second
 )
 
 func (c *Core) tokenRefreshLoop() {
@@ -325,7 +329,17 @@ func (c *Core) fetchCredits(a *auth.Account) (int64, error) {
 	s := a.Snap()
 	switch s.Provider {
 	case auth.ProviderTrae:
-		return c.Trae.UserEntUsage(a)
+		remain, err := c.Trae.UserEntUsage(a)
+		if err != nil {
+			return 0, err
+		}
+		// 显示积分 = 权益包剩余额度 + 签到积分池（两套独立积分体系）
+		_, checkin, _, _, err := c.Trae.CheckinStatus(a)
+		if err != nil {
+			c.logf("warn", "checkin credits %s query failed: %v", s.UID, desensitizeErr(err))
+			return remain, nil
+		}
+		return remain + checkin, nil
 	case auth.ProviderWorkBuddy:
 		return c.WB.UserResource(a)
 	}
@@ -388,7 +402,21 @@ func (c *Core) checkinOne(a *auth.Account) (string, error) {
 		}
 		claimRaw, err := c.Trae.CheckinClaim(a)
 		if err != nil {
-			return "", err
+			c.logf("warn", "checkin claim %s failed: %v", s.UID, desensitizeErr(err))
+			// 9074（参与用户太多）为瞬时繁忙，短暂重试后再如实上报
+			if errors.Is(err, trae.ErrCheckinBusy) {
+				for i := 0; i < checkinClaimRetries; i++ {
+					time.Sleep(checkinClaimRetryWait)
+					claimRaw, err = c.Trae.CheckinClaim(a)
+					if err == nil {
+						break
+					}
+					c.logf("warn", "checkin claim %s retry %d/%d: %v", s.UID, i+1, checkinClaimRetries, desensitizeErr(err))
+				}
+			}
+			if err != nil {
+				return "", err
+			}
 		}
 		c.logf("info", "checkin claim %s: %s", s.UID, claimRaw)
 		return "签到成功", nil
