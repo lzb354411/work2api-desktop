@@ -261,17 +261,18 @@ PollLoginStatus()
 **Config** ([internal/app/config.go](internal/app/config.go)):
 ```go
 type Config struct {
-    Port             int    // 默认 8317
-    APIKey           string // 首次启动自动生成
-    DefaultProvider  string // trae | workbuddy | auto
-    DefaultTraeModel string // TRAE 默认模型（空模型名请求回退）
-    DefaultWBModel   string // WorkBuddy 默认模型（空模型名请求回退）
+    Port             int      // 默认 8317
+    APIKey           string   // 首次启动自动生成
+    DefaultProvider  string   // trae | workbuddy | auto
     CheckinEnabled   bool
-    CheckinTime      string // HH:MM
+    CheckinTime      string   // HH:MM
     StartMinimized   bool
+    AutoStart        bool     // 开机自启动（HKCU Run）
+    CreditFloor      int64    // 积分保留阈值（0 = 不限制）
+    DisabledProviders []string // 被禁用的上游（UI 开关）
 }
 ```
-首次启动检测：空 Key 自动生成、非法端口修正为 8317、空默认模型回退 `deepseek-v4-flash`（DeepSeek v4 flash 正式版，`app.DefaultTraeModel`/`app.DefaultWBModel` 常量）。
+首次启动检测：空 Key 自动生成、非法端口修正为 8317。空模型名请求的默认模型由 server 层内置回退（`fallbackDefaultModels`，DeepSeek v4 flash 正式版）。
 
 **RingLog** 固定 500 条内存环形缓冲，支持 `Subscribe()` 推送给前端 Events；慢消费者非阻塞丢弃。
 
@@ -415,9 +416,9 @@ glm-5.2       → defaultProvider (auto 跨上游挑)
 单文件 [App.vue](frontend/src/App.vue)，无路由无状态库：
 - **侧栏导航**：仪表盘 / 账号管理 / 设置 / 隐藏到托盘
 - **仪表盘**：4 项统计 + DeepSeek Harness 接入卡片 + 脱敏日志流
-- **账号管理**：登录按钮（TRAE/WB）、列表（签到/积分/恢复/删除）
+- **账号管理**：登录按钮（TRAE/WB）、一键全签、列表（签到/积分/恢复/删除）；签到返回真实结果（成功/已签到/未生效），TRAE 原始响应记入日志
 - **设置**：端口、默认上游、积分保留阈值、签到开关与时间、启动最小化、开机自启动（HKCU Run 注册表）
-- **模型页**：两上游模型列表（动态拉取 + 真实上下文窗口）、各上游默认模型选择、上游启用开关（关闭后不消耗其积分）
+- **模型页**：两上游模型列表（动态拉取 + 真实上下文窗口）、模型 ID 一键复制（带前缀可直填 Agent）、上游启用开关（关闭后不消耗其积分）；空模型名请求由 server 内置回退 DeepSeek v4 flash 正式版
 - **登录弹窗**：5min 超时倒计时、轮询 PollLoginStatus（2.5s 间隔）
 
 数据流：

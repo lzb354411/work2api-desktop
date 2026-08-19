@@ -389,16 +389,16 @@ func (c *Client) FetchModels(a *auth.Account) ([]ModelInfo, error) {
 	return out, nil
 }
 
-// CheckinStatus 查询签到状态。
-func (c *Client) CheckinStatus(a *auth.Account) (checkedIn bool, credits int64, enable bool, err error) {
+// CheckinStatus 查询签到状态。raw 返回原始响应（截断），供诊断日志。
+func (c *Client) CheckinStatus(a *auth.Account) (checkedIn bool, credits int64, enable bool, raw string, err error) {
 	req, err := http.NewRequest(http.MethodPost, c.UgHost+EpCheckinStatus, bytes.NewReader([]byte("{}")))
 	if err != nil {
-		return false, 0, false, err
+		return false, 0, false, "", err
 	}
 	UgHeaders(req, a.Snap())
 	data, err := c.doJSON(req)
 	if err != nil {
-		return false, 0, false, err
+		return false, 0, false, "", err
 	}
 	var resp struct {
 		CheckedIn bool  `json:"checked_in"`
@@ -406,20 +406,23 @@ func (c *Client) CheckinStatus(a *auth.Account) (checkedIn bool, credits int64, 
 		Enable    bool  `json:"enable"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return false, 0, false, fmt.Errorf("checkin status parse: %w", err)
+		return false, 0, false, truncate(string(data), 300), fmt.Errorf("checkin status parse: %w", err)
 	}
-	return resp.CheckedIn, resp.Credits, resp.Enable, nil
+	return resp.CheckedIn, resp.Credits, resp.Enable, truncate(string(data), 300), nil
 }
 
-// CheckinClaim 执行签到。
-func (c *Client) CheckinClaim(a *auth.Account) error {
+// CheckinClaim 执行签到。raw 返回原始响应（截断），供诊断日志。
+func (c *Client) CheckinClaim(a *auth.Account) (raw string, err error) {
 	req, err := http.NewRequest(http.MethodPost, c.UgHost+EpCheckinClaim, bytes.NewReader([]byte("{}")))
 	if err != nil {
-		return err
+		return "", err
 	}
 	UgHeaders(req, a.Snap())
-	_, err = c.doJSON(req)
-	return err
+	data, err := c.doJSON(req)
+	if err != nil {
+		return "", err
+	}
+	return truncate(string(data), 300), nil
 }
 
 // UserEntUsage 聚合剩余积分：remain = Σ(credits_limit - usage.credits_amount)。

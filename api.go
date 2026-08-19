@@ -5,7 +5,6 @@ import (
 	"context"
 	"os/exec"
 	stdruntime "runtime"
-	"strings"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -35,17 +34,15 @@ type Dashboard struct {
 
 // SettingsDTO 设置视图。
 type SettingsDTO struct {
-	Port             int    `json:"port"`
-	DefaultProvider  string `json:"defaultProvider"`
-	DefaultTraeModel string `json:"defaultTraeModel"`
-	DefaultWBModel   string `json:"defaultWBModel"`
-	CheckinEnabled   bool   `json:"checkinEnabled"`
-	CheckinTime      string `json:"checkinTime"`
-	StartMinimized   bool   `json:"startMinimized"`
-	AutoStart        bool   `json:"autoStart"`
-	TraeEnabled      bool   `json:"traeEnabled"`
-	WBEnabled        bool   `json:"wbEnabled"`
-	CreditFloor      int64  `json:"creditFloor"`
+	Port            int    `json:"port"`
+	DefaultProvider string `json:"defaultProvider"`
+	CheckinEnabled  bool   `json:"checkinEnabled"`
+	CheckinTime     string `json:"checkinTime"`
+	StartMinimized  bool   `json:"startMinimized"`
+	AutoStart       bool   `json:"autoStart"`
+	TraeEnabled     bool   `json:"traeEnabled"`
+	WBEnabled       bool   `json:"wbEnabled"`
+	CreditFloor     int64  `json:"creditFloor"`
 }
 
 // ModelsDTO 各上游模型列表视图。
@@ -87,17 +84,15 @@ func (a *API) GetDashboard() Dashboard {
 func (a *API) GetSettings() SettingsDTO {
 	cfg := a.core.Cfg()
 	return SettingsDTO{
-		Port:             cfg.Port,
-		DefaultProvider:  cfg.DefaultProvider,
-		DefaultTraeModel: cfg.DefaultTraeModel,
-		DefaultWBModel:   cfg.DefaultWBModel,
-		CheckinEnabled:   cfg.CheckinEnabled,
-		CheckinTime:      cfg.CheckinTime,
-		StartMinimized:   cfg.StartMinimized,
-		AutoStart:        cfg.AutoStart,
-		TraeEnabled:      cfg.ProviderEnabled(auth.ProviderTrae),
-		WBEnabled:        cfg.ProviderEnabled(auth.ProviderWorkBuddy),
-		CreditFloor:      cfg.CreditFloor,
+		Port:            cfg.Port,
+		DefaultProvider: cfg.DefaultProvider,
+		CheckinEnabled:  cfg.CheckinEnabled,
+		CheckinTime:     cfg.CheckinTime,
+		StartMinimized:  cfg.StartMinimized,
+		AutoStart:       cfg.AutoStart,
+		TraeEnabled:     cfg.ProviderEnabled(auth.ProviderTrae),
+		WBEnabled:       cfg.ProviderEnabled(auth.ProviderWorkBuddy),
+		CreditFloor:     cfg.CreditFloor,
 	}
 }
 
@@ -113,15 +108,6 @@ func (a *API) SaveSettings(s SettingsDTO) (bool, error) {
 	if s.CreditFloor < 0 {
 		return false, errString("积分保留阈值不能为负数（0 = 不限制）")
 	}
-	// 未选择默认模型 → 回退各上游 DeepSeek v4 flash 正式版
-	s.DefaultTraeModel = strings.TrimSpace(s.DefaultTraeModel)
-	if s.DefaultTraeModel == "" {
-		s.DefaultTraeModel = app.DefaultTraeModel
-	}
-	s.DefaultWBModel = strings.TrimSpace(s.DefaultWBModel)
-	if s.DefaultWBModel == "" {
-		s.DefaultWBModel = app.DefaultWBModel
-	}
 	// 上游开关：两个都关会没有任何可用账号，前端已提示，这里仍允许（用户自己负责）
 	var disabled []string
 	if !s.TraeEnabled {
@@ -133,8 +119,6 @@ func (a *API) SaveSettings(s SettingsDTO) (bool, error) {
 	nc := app.Config{
 		Port:              s.Port,
 		DefaultProvider:   s.DefaultProvider,
-		DefaultTraeModel:  s.DefaultTraeModel,
-		DefaultWBModel:    s.DefaultWBModel,
 		CheckinEnabled:    s.CheckinEnabled,
 		CheckinTime:       s.CheckinTime,
 		StartMinimized:    s.StartMinimized,
@@ -212,6 +196,11 @@ func (a *API) CancelLogin() {
 // CheckinNow 手动签到。
 func (a *API) CheckinNow(provider, uid string) (string, error) {
 	return a.core.CheckinNow(provider, uid)
+}
+
+// CheckinAllNow 一键全签所有账号，返回统计摘要。
+func (a *API) CheckinAllNow() (string, error) {
+	return a.core.CheckinAllNow()
 }
 
 // RefreshCreditsNow 手动刷新积分。

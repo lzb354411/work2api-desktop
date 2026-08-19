@@ -7,7 +7,7 @@ const wails = () => window.go?.main?.API
 const tab = ref('dashboard')
 const dash = ref(null)
 const accounts = ref([])
-const settings = reactive({ port: 8317, defaultProvider: 'auto', defaultTraeModel: 'deepseek-v4-flash', defaultWBModel: 'deepseek-v4-flash', checkinEnabled: true, checkinTime: '09:05', startMinimized: false, autoStart: false, traeEnabled: true, wbEnabled: true, creditFloor: 0 })
+const settings = reactive({ port: 8317, defaultProvider: 'auto', checkinEnabled: true, checkinTime: '09:05', startMinimized: false, autoStart: false, traeEnabled: true, wbEnabled: true, creditFloor: 0 })
 const logs = ref([])
 const toast = ref('')
 let toastTimer = null
@@ -84,8 +84,8 @@ onUnmounted(() => {
 
 // ---------- 模型 ----------
 const modelProviders = [
-  { key: 'trae', label: 'TRAE SOLO', defaultKey: 'defaultTraeModel', enabledKey: 'traeEnabled', prefix: 'trae/' },
-  { key: 'workbuddy', label: 'WorkBuddy', defaultKey: 'defaultWBModel', enabledKey: 'wbEnabled', prefix: 'wb/' }
+  { key: 'trae', label: 'TRAE SOLO', enabledKey: 'traeEnabled', prefix: 'trae/' },
+  { key: 'workbuddy', label: 'WorkBuddy', enabledKey: 'wbEnabled', prefix: 'wb/' }
 ]
 
 // 上游启用开关切换：立即保存（关闭后不再消耗该上游积分）
@@ -182,8 +182,26 @@ async function delAccount(a) {
 }
 
 async function checkin(a) {
-  await wrap(() => wails().CheckinNow(a.provider, a.uid), '签到完成')
+  // 后端返回真实结果：签到成功 / 今日已签到 / 签到未生效（enable=false）
+  const msg = await wrap(() => wails().CheckinNow(a.provider, a.uid))
+  showToast(`${a.provider === 'trae' ? 'TRAE' : 'WorkBuddy'}：${msg || '签到完成'}`)
   refreshAccounts()
+}
+
+let checkinAllRunning = false
+async function checkinAll() {
+  if (checkinAllRunning) return
+  checkinAllRunning = true
+  showToast('正在为所有账号签到…')
+  try {
+    const msg = await wails().CheckinAllNow()
+    showToast(msg)
+    refreshAccounts()
+  } catch (e) {
+    showToast('一键全签失败: ' + (e?.message || e))
+  } finally {
+    checkinAllRunning = false
+  }
 }
 
 async function refreshCredits(a) {
@@ -316,6 +334,7 @@ function hideToTray() { wails()?.HideToTray() }
         <h2 class="grow">账号管理</h2>
         <button class="btn" @click="startLogin('trae')">+ 登录 TRAE</button>
         <button class="btn" @click="startLogin('workbuddy')">+ 登录 WorkBuddy</button>
+        <button class="btn ghost" :disabled="checkinAllRunning" @click="checkinAll">一键全签</button>
         <button class="btn ghost" @click="wails()?.RefreshAllCredits(); showToast('积分刷新中…')">刷新积分</button>
       </div>
       <div class="card" style="padding:0">
@@ -378,24 +397,13 @@ function hideToTray() { wails()?.HideToTray() }
           <span style="color:var(--text-dim);font-size:12px" v-if="!settings[p.enabledKey]">已关闭（不消耗积分）</span>
           <span class="badge" :class="p.key" style="margin-left:4px">{{ models[p.key].length }} 个模型</span>
         </div>
-        <div class="form-item">
-          <label>默认模型（客户端未指定模型时使用）</label>
-          <select v-model="settings[p.defaultKey]">
-            <option v-for="m in models[p.key]" :key="m.id" :value="m.id">
-              {{ m.name && m.name !== m.id ? m.name + '（' + m.id + '）' : m.id }}
-            </option>
-            <option v-if="!models[p.key].some(m => m.id === settings[p.defaultKey])" :value="settings[p.defaultKey]">
-              {{ settings[p.defaultKey] }}（当前配置，不在列表中）
-            </option>
-          </select>
-        </div>
-        <div style="max-height:320px;overflow:auto">
+        <div style="max-height:420px;overflow:auto">
           <table v-if="models[p.key].length > 0">
             <thead>
               <tr><th>模型 ID</th><th>名称</th><th>上下文</th><th>最大输出</th><th style="width:90px">操作</th></tr>
             </thead>
             <tbody>
-              <tr v-for="m in models[p.key]" :key="m.id" :class="{ 'default-row': m.id === settings[p.defaultKey] }">
+              <tr v-for="m in models[p.key]" :key="m.id">
                 <td class="mono">{{ m.id }}</td>
                 <td>{{ m.name || '–' }}</td>
                 <td>{{ fmtTokens(m.contextLength) }}</td>
@@ -410,10 +418,9 @@ function hideToTray() { wails()?.HideToTray() }
         </div>
       </div>
 
-      <div class="row">
-        <button class="btn" @click="saveSettings">保存设置</button>
-        <span style="color:var(--text-dim);font-size:12px">未选择时默认使用 DeepSeek v4 flash 正式版（deepseek-v4-flash）</span>
-      </div>
+      <p style="color:var(--text-dim);font-size:12px">
+        复制得到的名称可直接填入 Agent 的模型栏（带 trae/ 或 wb/ 前缀，强制路由到对应上游）；客户端未指定模型时自动回退 DeepSeek v4 flash 正式版。
+      </p>
     </main>
 
     <!-- 设置 -->

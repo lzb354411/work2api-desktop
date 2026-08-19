@@ -8,6 +8,8 @@ import (
 	"context"
 	"embed"
 	"log"
+	"os"
+	"time"
 
 	"fyne.io/systray"
 	"github.com/wailsapp/wails/v2"
@@ -94,11 +96,13 @@ func onTrayReady() {
 	systray.SetIcon(trayIcon)
 	systray.SetTitle("Work2API")
 	systray.SetTooltip("Work2API Desktop — OpenAI 兼容代理")
+	// 单击托盘图标：直接显示主窗口
 	systray.SetOnTapped(func() { showMainWindow() })
 
-	mShow := systray.AddMenuItem("打开主界面", "显示主窗口")
+	// 右键菜单：显示程序页面 / 退出（所有进程全部关闭）
+	mShow := systray.AddMenuItem("显示程序页面", "显示主窗口")
 	systray.AddSeparator()
-	mQuit := systray.AddMenuItem("退出", "退出应用（API 服务停止）")
+	mQuit := systray.AddMenuItem("退出（所有进程全部关闭）", "退出应用并停止 API 服务")
 
 	go func() {
 		for {
@@ -106,13 +110,23 @@ func onTrayReady() {
 			case <-mShow.ClickedCh:
 				showMainWindow()
 			case <-mQuit.ClickedCh:
-				if api != nil && api.ctx != nil {
-					runtime.Quit(api.ctx)
-				}
-				systray.Quit()
+				quitApp()
 				return
 			}
 		}
+	}()
+}
+
+// quitApp 完整退出：通知 Wails 主循环返回（main 中随后 core.Stop() 停 HTTP
+// 服务、进程自然结束），同时结束托盘消息循环；2s 兜底强杀防残留。
+func quitApp() {
+	if api != nil && api.ctx != nil {
+		runtime.Quit(api.ctx)
+	}
+	systray.Quit()
+	go func() {
+		time.Sleep(2 * time.Second)
+		os.Exit(0)
 	}()
 }
 

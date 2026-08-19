@@ -9,11 +9,11 @@ TRAE SOLO 与 WorkBuddy（CodeBuddy CN）的 OpenAI 兼容本地代理 —— **
 - **双上游账号池**：TRAE SOLO 与 WorkBuddy 账号统一管理，自动轮转、冷却、禁用与恢复
 - **OpenAI 兼容 API**：`/v1/chat/completions`（SSE 流式）、`/v1/models`、`/status`
 - **模型前缀路由**：`trae/xxx` 强制走 TRAE，`wb/xxx` 强制走 WorkBuddy，无前缀按默认策略（trae / workbuddy / auto 积分最多者优先）
-- **模型管理**：界面内分别查看两上游各自的模型列表（动态拉取，真实上下文窗口与最大输出），可为各上游选择默认模型；客户端未指定模型时自动使用，未选择时默认 DeepSeek v4 flash 正式版（`deepseek-v4-flash`）
+- **模型管理**：界面内分别查看两上游各自的模型列表（动态拉取，真实上下文窗口与最大输出），模型 ID 一键复制可直接填入 Agent；客户端未指定模型时自动回退 DeepSeek v4 flash 正式版
 - **上游启用开关**：「模型」页每个上游标题后带开关，关闭后不再消耗该上游积分（auto 路由自动跳过；显式前缀路由返回 403）
 - **积分保留阈值**：可自定义数值，账号余额 ≤ 阈值时自动暂停使用（保留积分），签到/积分回填超过阈值后自动恢复；0 = 不限制
 - **自动 Token 刷新**：临期自动续期，失败自动冷却换号
-- **积分查询与每日自动签到**：可配置签到时间
+- **积分查询与签到**：每日自动签到（可配置时间）+ 账号管理页手动单签/一键全签；签到返回真实结果（成功/已签到/未生效，原始响应记入日志便于排查）
 - **开机自启动**：可选（写入 HKCU Run 注册表，无需管理员权限），在「设置」页开关
 - **系统托盘**：关闭窗口隐藏到托盘，后台持续提供 API 服务
 - **浏览器 OAuth 登录**：TRAE 本地回调自动捕获，WorkBuddy 设备流轮询；支持导入旧版明文 auth 文件（自动转为加密存储）
@@ -49,9 +49,9 @@ go test ./...        # 运行测试
 ```
 Base URL: http://127.0.0.1:8317/v1
 API Key:  <仪表盘生成>
-Model:    （可省略）        # 未指定时使用各上游默认模型（DeepSeek v4 flash 正式版，可在「模型」页修改）
-          trae/glm-5.2     # 强制 TRAE
-          wb/auto          # 强制 WorkBuddy
+Model:    trae/glm-5.2     # 强制 TRAE（在「模型」页复制完整模型名）
+          wb/deepseek-v4-flash   # 强制 WorkBuddy
+          （可省略）        # 未指定时回退 DeepSeek v4 flash 正式版
 ```
 
 数据目录：`%APPDATA%\work2api-desktop`（配置与账号均为 DPAPI 加密文件，换机器/用户不可解密）。

@@ -32,9 +32,8 @@ type Deps struct {
 	Trae            *trae.Client
 	WB              *workbuddy.Client
 	APIKey          func() string
-	DefaultProvider func() string            // trae | workbuddy | auto
-	DefaultModel    func(provider string) string // 各上游默认模型（空模型名请求回退；nil 用内置回退）
-	ProviderEnabled func(provider string) bool  // 上游启用状态（UI 开关；nil = 全部启用）
+	DefaultProvider func() string           // trae | workbuddy | auto
+	ProviderEnabled func(provider string) bool // 上游启用状态（UI 开关；nil = 全部启用）
 	Logf            func(format string, args ...any)
 }
 
@@ -432,13 +431,8 @@ var fallbackDefaultModels = map[string]string{
 	auth.ProviderWorkBuddy: "deepseek-v4-flash",
 }
 
-// modelDefault 某上游的默认模型：配置优先，内置 DeepSeek v4 flash 正式版兜底。
+// modelDefault 某上游的内置默认模型（空模型名请求的回退，DeepSeek v4 flash 正式版）。
 func (h *Handler) modelDefault(provider string) string {
-	if h.d.DefaultModel != nil {
-		if m := h.d.DefaultModel(provider); m != "" {
-			return m
-		}
-	}
 	return fallbackDefaultModels[provider]
 }
 

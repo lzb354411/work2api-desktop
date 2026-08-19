@@ -158,17 +158,6 @@ func (c *Core) startServerLocked(port int) error {
 			defer c.mu.RUnlock()
 			return c.cfg.DefaultProvider
 		},
-		DefaultModel: func(provider string) string {
-			c.mu.RLock()
-			defer c.mu.RUnlock()
-			switch provider {
-			case auth.ProviderTrae:
-				return c.cfg.DefaultTraeModel
-			case auth.ProviderWorkBuddy:
-				return c.cfg.DefaultWBModel
-			}
-			return ""
-		},
 		ProviderEnabled: func(provider string) bool {
 			c.mu.RLock()
 			defer c.mu.RUnlock()
@@ -373,31 +362,43 @@ func (c *Core) runCheckinAll() {
 	}
 	for _, a := range c.Store.List() {
 		s := a.Snap()
-		if err := c.checkinOne(a); err != nil {
+		if _, err := c.checkinOne(a); err != nil {
 			c.logf("warn", "checkin %s/%s failed: %v", s.Provider, s.UID, desensitizeErr(err))
 		}
 	}
 	c.refreshAllCredits()
 }
 
-func (c *Core) checkinOne(a *auth.Account) error {
+// checkinOne 单账号签到，返回结果描述（供 UI 提示与诊断）。
+// TRAE：enable=false 或已签到时不调用领取接口，明确告知而非静默"成功"。
+func (c *Core) checkinOne(a *auth.Account) (string, error) {
 	s := a.Snap()
 	switch s.Provider {
 	case auth.ProviderTrae:
-		checked, _, enable, err := c.Trae.CheckinStatus(a)
+		checked, _, enable, raw, err := c.Trae.CheckinStatus(a)
 		if err != nil {
-			return err
+			return "", err
 		}
-		if enable && !checked {
-			if err := c.Trae.CheckinClaim(a); err != nil {
-				return err
-			}
+		c.logf("info", "checkin status %s: %s", s.UID, raw)
+		if !enable {
+			return "签到未生效（接口返回 enable=false，详见日志）", nil
 		}
-		return nil
+		if checked {
+			return "今日已签到，无需重复", nil
+		}
+		claimRaw, err := c.Trae.CheckinClaim(a)
+		if err != nil {
+			return "", err
+		}
+		c.logf("info", "checkin claim %s: %s", s.UID, claimRaw)
+		return "签到成功", nil
 	case auth.ProviderWorkBuddy:
-		return c.WB.DailyCheckin(a)
+		if err := c.WB.DailyCheckin(a); err != nil {
+			return "", err
+		}
+		return "签到成功", nil
 	}
-	return fmt.Errorf("unknown provider")
+	return "", fmt.Errorf("unknown provider")
 }
 
 func nextRunTime(hhmm string) (time.Time, error) {
@@ -438,17 +439,42 @@ func (c *Core) DeleteAccount(provider, uid string) error {
 	return nil
 }
 
-// CheckinNow 手动签到单个账号。
+// CheckinNow 手动签到单个账号，返回结果描述。
 func (c *Core) CheckinNow(provider, uid string) (string, error) {
 	a := c.findAccount(provider, uid)
 	if a == nil {
 		return "", fmt.Errorf("account not found")
 	}
-	if err := c.checkinOne(a); err != nil {
+	msg, err := c.checkinOne(a)
+	if err != nil {
 		return "", err
 	}
 	c.refreshAllCredits()
-	return "ok", nil
+	return msg, nil
+}
+
+// CheckinAllNow 一键全签所有账号，返回统计摘要。
+func (c *Core) CheckinAllNow() (string, error) {
+	var ok, skip, fail int
+	for _, a := range c.Store.List() {
+		msg, err := c.checkinOne(a)
+		if err != nil {
+			fail++
+			s := a.Snap()
+			c.logf("warn", "checkin %s/%s failed: %v", s.Provider, s.UID, desensitizeErr(err))
+			continue
+		}
+		if msg == "签到成功" {
+			ok++
+		} else {
+			skip++
+		}
+	}
+	c.refreshAllCredits()
+	if fail > 0 {
+		return fmt.Sprintf("全部签到完成：成功 %d，跳过 %d，失败 %d（详见日志）", ok, skip, fail), nil
+	}
+	return fmt.Sprintf("全部签到完成：成功 %d，跳过 %d（已签到/未生效）", ok, skip), nil
 }
 
 // RefreshCreditsNow 手动刷新单个账号积分。
