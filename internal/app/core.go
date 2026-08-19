@@ -30,6 +30,7 @@ type Core struct {
 	Log   *RingLog
 
 	srv       *http.Server
+	apiH      *server.Handler // 当前 API handler（模型列表查询用）
 	startedAt time.Time
 
 	// 登录会话（单并发：一次只允许一个登录流程）
@@ -83,6 +84,7 @@ func NewCore() (*Core, error) {
 		Log:     log,
 	}
 	c.syncPool()
+	c.Pool.SetCreditFloor(cfg.CreditFloor)
 	return c, nil
 }
 
@@ -156,6 +158,22 @@ func (c *Core) startServerLocked(port int) error {
 			defer c.mu.RUnlock()
 			return c.cfg.DefaultProvider
 		},
+		DefaultModel: func(provider string) string {
+			c.mu.RLock()
+			defer c.mu.RUnlock()
+			switch provider {
+			case auth.ProviderTrae:
+				return c.cfg.DefaultTraeModel
+			case auth.ProviderWorkBuddy:
+				return c.cfg.DefaultWBModel
+			}
+			return ""
+		},
+		ProviderEnabled: func(provider string) bool {
+			c.mu.RLock()
+			defer c.mu.RUnlock()
+			return c.cfg.ProviderEnabled(provider)
+		},
 		Logf: func(f string, a ...any) { c.logf("info", f, a...) },
 	})
 	// 安全：只监听 loopback，不暴露局域网
@@ -170,6 +188,7 @@ func (c *Core) startServerLocked(port int) error {
 	}
 	c.mu.Lock()
 	c.srv = srv
+	c.apiH = h
 	c.mu.Unlock()
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -202,11 +221,30 @@ func (c *Core) RestartServer() error {
 func (c *Core) UpdateConfig(nc Config) (bool, error) {
 	c.mu.Lock()
 	portChanged := nc.Port != c.cfg.Port
+	autoStartChanged := nc.AutoStart != c.cfg.AutoStart
+	floorChanged := nc.CreditFloor != c.cfg.CreditFloor
 	nc.APIKey = c.cfg.APIKey // API Key 不走此路径修改
 	c.cfg = &nc
 	c.mu.Unlock()
 	if err := SaveConfig(c.cfgPath, &nc); err != nil {
 		return false, err
+	}
+	if floorChanged {
+		c.Pool.SetCreditFloor(nc.CreditFloor)
+		if nc.CreditFloor > 0 {
+			c.logf("info", "credit floor set to %d: accounts at/below paused until credits recover", nc.CreditFloor)
+		} else {
+			c.logf("info", "credit floor disabled")
+		}
+	}
+	if autoStartChanged {
+		if err := SetAutoStart(nc.AutoStart); err != nil {
+			c.logf("error", "autostart: %v", err)
+		} else if nc.AutoStart {
+			c.logf("info", "autostart enabled")
+		} else {
+			c.logf("info", "autostart disabled")
+		}
 	}
 	if portChanged {
 		if err := c.RestartServer(); err != nil {
@@ -454,4 +492,29 @@ func (c *Core) UptimeMs() int64 {
 		return 0
 	}
 	return time.Since(c.startedAt).Milliseconds()
+}
+
+// ---------------------------------------------------------------------------
+// 模型列表
+// ---------------------------------------------------------------------------
+
+// Models 两个上游各自的模型列表（动态优先，静态兜底）。
+func (c *Core) Models() (traeModels, wbModels []server.ModelBrief) {
+	c.mu.RLock()
+	h := c.apiH
+	c.mu.RUnlock()
+	if h == nil {
+		return nil, nil
+	}
+	return h.ListProviderModels(auth.ProviderTrae), h.ListProviderModels(auth.ProviderWorkBuddy)
+}
+
+// RefreshModels 清空缓存强制重拉模型列表。
+func (c *Core) RefreshModels() {
+	c.mu.RLock()
+	h := c.apiH
+	c.mu.RUnlock()
+	if h != nil {
+		h.RefreshModels()
+	}
 }

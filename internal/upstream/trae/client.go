@@ -312,7 +312,14 @@ type ModelInfo struct {
 	MaxTokens     int64
 }
 
-// FetchModels 拉 SOLO 模型表。
+// FetchModels 拉 SOLO 模型表（get_detail_param）。
+//
+// 响应包含全部 37 个配置，其中大量是内部子代理模型（explore_sub_agent_*、
+// browser_use_subagent、summary、内部代号 sagitta/aquila、重复别名等），
+// 桌面客户端按 is_invisible_to_user + 显示名过滤，此处采用相同规则。
+//
+// 上下文窗口取 context_window_tokens 各键最大值（如 dev:300000 max:300000）；
+// 该字段缺失时按实测规律 context = prompt_max_tokens + max_tokens 估算。
 func (c *Client) FetchModels(a *auth.Account) ([]ModelInfo, error) {
 	body := map[string]any{
 		"function":            Function,
@@ -335,10 +342,16 @@ func (c *Client) FetchModels(a *auth.Account) ([]ModelInfo, error) {
 	}
 	var resp struct {
 		ConfigInfoList []struct {
-			ConfigName      string `json:"config_name"`
-			DisplayConfig   struct {
+			ConfigName          string `json:"config_name"`
+			IsInvisibleToUser   bool   `json:"is_invisible_to_user"`
+			ContextWindowTokens map[string]int64 `json:"context_window_tokens"`
+			DisplayConfig struct {
 				DisplayName string `json:"display_name"`
 			} `json:"display_config"`
+			ModelDetailList []struct {
+				MaxTokens       int64 `json:"max_tokens"`
+				PromptMaxTokens int64 `json:"prompt_max_tokens"`
+			} `json:"model_detail_list"`
 		} `json:"config_info_list"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
@@ -346,12 +359,28 @@ func (c *Client) FetchModels(a *auth.Account) ([]ModelInfo, error) {
 	}
 	out := make([]ModelInfo, 0, len(resp.ConfigInfoList))
 	for _, cfg := range resp.ConfigInfoList {
-		if cfg.ConfigName == "" {
-			continue
+		if cfg.ConfigName == "" || cfg.IsInvisibleToUser || cfg.DisplayConfig.DisplayName == "" {
+			continue // 内部子代理/无显示名配置，桌面客户端同样不展示
+		}
+		var maxOut, promptMax int64
+		if len(cfg.ModelDetailList) > 0 {
+			maxOut = cfg.ModelDetailList[0].MaxTokens
+			promptMax = cfg.ModelDetailList[0].PromptMaxTokens
+		}
+		ctx := int64(0)
+		for _, v := range cfg.ContextWindowTokens {
+			if v > ctx {
+				ctx = v
+			}
+		}
+		if ctx == 0 {
+			ctx = promptMax + maxOut // 实测规律：缺失时 context = prompt_max + max_out
 		}
 		out = append(out, ModelInfo{
-			ID:   cfg.ConfigName,
-			Name: cfg.DisplayConfig.DisplayName,
+			ID:            cfg.ConfigName,
+			Name:          cfg.DisplayConfig.DisplayName,
+			ContextWindow: ctx,
+			MaxTokens:     maxOut,
 		})
 	}
 	if len(out) == 0 {
@@ -393,7 +422,9 @@ func (c *Client) CheckinClaim(a *auth.Account) error {
 	return err
 }
 
-// UserEntUsage 聚合积分（credits_limit 求和）。
+// UserEntUsage 聚合剩余积分：remain = Σ(credits_limit - usage.credits_amount)。
+// credits_limit 是权益包总额度，usage.credits_amount 是已用积分（实测字段）；
+// 只累加 limit 会把已耗尽的账号误显示为满额度。
 func (c *Client) UserEntUsage(a *auth.Account) (remain int64, err error) {
 	req, err := http.NewRequest(http.MethodPost, c.UgHost+EpEntUsage, bytes.NewReader([]byte("{}")))
 	if err != nil {
@@ -411,13 +442,23 @@ func (c *Client) UserEntUsage(a *auth.Account) (remain int64, err error) {
 					CreditsLimit int64 `json:"credits_limit"`
 				} `json:"quota"`
 			} `json:"entitlement_base_info"`
+			Usage struct {
+				CreditsAmount float64 `json:"credits_amount"`
+			} `json:"usage"`
 		} `json:"user_entitlement_pack_list"`
 	}
 	if err := json.Unmarshal(data, &resp); err != nil {
 		return 0, fmt.Errorf("ent usage parse: %w", err)
 	}
 	for _, p := range resp.UserEntitlementPackList {
-		remain += p.EntitlementBaseInfo.Quota.CreditsLimit
+		l := p.EntitlementBaseInfo.Quota.CreditsLimit
+		if l <= 0 {
+			continue
+		}
+		remain += l - int64(p.Usage.CreditsAmount)
+	}
+	if remain < 0 {
+		remain = 0
 	}
 	return remain, nil
 }

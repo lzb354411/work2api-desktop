@@ -17,14 +17,37 @@ import (
 // Version 应用版本。
 const Version = "1.0.0"
 
+// 各上游默认模型：请求未指定模型（或配置未选择）时的回退，均为 DeepSeek v4 flash 正式版。
+// TRAE 的「正式版」config_name 带 -Official 后缀（实测 get_detail_param）；
+// WorkBuddy 的 flash 模型 ID 即小写 deepseek-v4-flash（实测 console/models）。
+const (
+	DefaultTraeModel = "DeepSeek-V4-Flash-Official"
+	DefaultWBModel   = "deepseek-v4-flash"
+)
+
 // Config 应用配置（整体 DPAPI 加密落盘为 config.dat）。
 type Config struct {
-	Port           int    `json:"port"`           // API 监听端口，默认 8317
-	APIKey         string `json:"apiKey"`         // 必填，首次启动自动生成
-	DefaultProvider string `json:"defaultProvider"` // trae | workbuddy | auto
-	CheckinEnabled bool   `json:"checkinEnabled"` // 每日自动签到
-	CheckinTime    string `json:"checkinTime"`    // HH:MM，默认 09:05
-	StartMinimized bool   `json:"startMinimized"` // 启动时最小化到托盘
+	Port             int      `json:"port"`             // API 监听端口，默认 8317
+	APIKey           string   `json:"apiKey"`           // 必填，首次启动自动生成
+	DefaultProvider  string   `json:"defaultProvider"`  // trae | workbuddy | auto
+	DefaultTraeModel string   `json:"defaultTraeModel"` // TRAE 默认模型（空模型名请求回退）
+	DefaultWBModel   string   `json:"defaultWBModel"`   // WorkBuddy 默认模型（空模型名请求回退）
+	CheckinEnabled   bool     `json:"checkinEnabled"`   // 每日自动签到
+	CheckinTime      string   `json:"checkinTime"`      // HH:MM，默认 09:05
+	StartMinimized   bool     `json:"startMinimized"`   // 启动时最小化到托盘
+	AutoStart        bool     `json:"autoStart"`        // 开机自动启动（HKCU Run 注册表）
+	CreditFloor      int64    `json:"creditFloor"`      // 积分保留阈值：账号余额 <= 该值时暂停挑号（0 = 不限制）
+	DisabledProviders []string `json:"disabledProviders"` // 被禁用的上游（UI 开关关闭；缺省=全部启用）
+}
+
+// ProviderEnabled 上游是否启用（未列入 DisabledProviders 即启用）。
+func (c *Config) ProviderEnabled(provider string) bool {
+	for _, p := range c.DisabledProviders {
+		if p == provider {
+			return false
+		}
+	}
+	return true
 }
 
 // LogEntry 环形日志条目。
@@ -112,10 +135,13 @@ func DataDir() (string, error) {
 
 func defaultConfig() *Config {
 	return &Config{
-		Port:            8317,
-		DefaultProvider: "auto",
-		CheckinEnabled:  true,
-		CheckinTime:     "09:05",
+		Port:             8317,
+		DefaultProvider:  "auto",
+		DefaultTraeModel: DefaultTraeModel,
+		DefaultWBModel:   DefaultWBModel,
+		CheckinEnabled:   true,
+		CheckinTime:      "09:05",
+		AutoStart:        false,
 	}
 }
 
@@ -154,6 +180,19 @@ func LoadConfig(path string) (*Config, error) {
 	}
 	if cfg.DefaultProvider == "" {
 		cfg.DefaultProvider = "auto"
+	}
+	// 旧版配置无默认模型字段（或未选择）→ 回退 DeepSeek v4 flash 正式版；
+	// 迁移历史值：早期版本 TRAE 默认模型误存为小写 deepseek-v4-flash（WB 的 ID），
+	// 实测 TRAE 正式版 config_name 为 DeepSeek-V4-Flash-Official，此处纠正。
+	if cfg.DefaultTraeModel == "" || cfg.DefaultTraeModel == "deepseek-v4-flash" {
+		cfg.DefaultTraeModel = DefaultTraeModel
+	}
+	if cfg.DefaultWBModel == "" {
+		cfg.DefaultWBModel = DefaultWBModel
+	}
+	// 积分保留阈值：负数视为未启用（0 = 不限制）
+	if cfg.CreditFloor < 0 {
+		cfg.CreditFloor = 0
 	}
 	return cfg, nil
 }

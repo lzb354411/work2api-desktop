@@ -7,10 +7,15 @@ const wails = () => window.go?.main?.API
 const tab = ref('dashboard')
 const dash = ref(null)
 const accounts = ref([])
-const settings = reactive({ port: 8317, defaultProvider: 'auto', checkinEnabled: true, checkinTime: '09:05', startMinimized: false })
+const settings = reactive({ port: 8317, defaultProvider: 'auto', defaultTraeModel: 'deepseek-v4-flash', defaultWBModel: 'deepseek-v4-flash', checkinEnabled: true, checkinTime: '09:05', startMinimized: false, autoStart: false, traeEnabled: true, wbEnabled: true, creditFloor: 0 })
 const logs = ref([])
 const toast = ref('')
 let toastTimer = null
+
+// 模型列表
+const models = reactive({ trae: [], workbuddy: [] })
+const modelsLoaded = ref(false)
+const modelsLoading = ref(false)
 
 // 登录弹窗
 const loginModal = reactive({
@@ -76,6 +81,57 @@ onUnmounted(() => {
   clearInterval(pollTimer)
   clearInterval(loginPollTimer)
 })
+
+// ---------- 模型 ----------
+const modelProviders = [
+  { key: 'trae', label: 'TRAE SOLO', defaultKey: 'defaultTraeModel', enabledKey: 'traeEnabled', prefix: 'trae/' },
+  { key: 'workbuddy', label: 'WorkBuddy', defaultKey: 'defaultWBModel', enabledKey: 'wbEnabled', prefix: 'wb/' }
+]
+
+// 上游启用开关切换：立即保存（关闭后不再消耗该上游积分）
+// v-model 已把新值写入 settings，这里直接读当前值；保存失败回滚 UI 状态
+async function toggleProvider(p) {
+  const prev = !settings[p.enabledKey]
+  const next = settings[p.enabledKey]
+  try {
+    await wails().SaveSettings({ ...settings })
+    showToast(next ? `${p.label} 已启用` : `${p.label} 已关闭（不再消耗其积分）`)
+    refreshDash()
+  } catch (e) {
+    settings[p.enabledKey] = prev
+    showToast('操作失败: ' + (e?.message || e))
+  }
+}
+
+async function loadModels(force = false) {
+  if (modelsLoading.value) return
+  modelsLoading.value = true
+  try {
+    const m = force ? await wails().RefreshModels() : await wails().ListModels()
+    models.trae = m.trae || []
+    models.workbuddy = m.workbuddy || []
+    modelsLoaded.value = true
+  } catch (e) {
+    showToast('模型列表加载失败: ' + (e?.message || e))
+  } finally {
+    modelsLoading.value = false
+  }
+}
+
+function switchTab(t) {
+  tab.value = t
+  if (t === 'models' && !modelsLoaded.value) loadModels()
+}
+
+function fmtTokens(n) {
+  if (!n) return '–'
+  return n >= 1000 ? Math.round(n / 1000) + 'K' : String(n)
+}
+
+function copyModelId(p, m) {
+  const id = p.prefix + m.id
+  navigator.clipboard.writeText(id).then(() => showToast(`已复制 ${id}`))
+}
 
 // ---------- 账号操作 ----------
 async function startLogin(provider) {
@@ -146,6 +202,8 @@ function openLoginUrl() {
 
 // ---------- 设置 ----------
 async function saveSettings() {
+  // 积分阈值：空输入/非法值归零（0 = 不限制）
+  settings.creditFloor = Math.max(0, Math.floor(Number(settings.creditFloor) || 0))
   await wrap(() => wails().SaveSettings({ ...settings }), '设置已保存')
   refreshDash()
 }
@@ -172,7 +230,7 @@ async function copyKey() {
 function copyCurl() {
   const d = dash.value
   if (!d) return
-  const text = `curl ${d.baseUrl}/v1/chat/completions -H "Authorization: Bearer ${d.apiKey}" -H "Content-Type: application/json" -d '{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}'`
+  const text = `curl ${d.baseUrl}/v1/chat/completions -H "Authorization: Bearer ${d.apiKey}" -H "Content-Type: application/json" -d '{"messages":[{"role":"user","content":"hi"}]}'`
   navigator.clipboard.writeText(text).then(() => showToast('已复制调用示例'))
 }
 
@@ -185,9 +243,10 @@ function hideToTray() { wails()?.HideToTray() }
     <!-- 侧栏 -->
     <aside class="sidebar">
       <div class="brand">Work<span class="dot">2</span>API</div>
-      <div class="nav-item" :class="{ active: tab === 'dashboard' }" @click="tab = 'dashboard'">仪表盘</div>
-      <div class="nav-item" :class="{ active: tab === 'accounts' }" @click="tab = 'accounts'">账号管理</div>
-      <div class="nav-item" :class="{ active: tab === 'settings' }" @click="tab = 'settings'">设置</div>
+      <div class="nav-item" :class="{ active: tab === 'dashboard' }" @click="switchTab('dashboard')">仪表盘</div>
+      <div class="nav-item" :class="{ active: tab === 'accounts' }" @click="switchTab('accounts')">账号管理</div>
+      <div class="nav-item" :class="{ active: tab === 'models' }" @click="switchTab('models')">模型</div>
+      <div class="nav-item" :class="{ active: tab === 'settings' }" @click="switchTab('settings')">设置</div>
       <div class="spacer"></div>
       <div class="nav-item" @click="hideToTray">隐藏到托盘</div>
       <div class="ver">v{{ dash?.version || '…' }}</div>
@@ -235,7 +294,7 @@ function hideToTray() { wails()?.HideToTray() }
         </div>
         <div class="row">
           <button class="btn ghost" @click="copyCurl">复制 curl 示例</button>
-          <span style="color:var(--text-dim);font-size:12px">模型可用 trae/xxx 或 wb/xxx 前缀强制指定上游</span>
+          <span style="color:var(--text-dim);font-size:12px">不传 model 时走各上游默认模型（DeepSeek v4 flash）；trae/xxx、wb/xxx 前缀强制指定上游</span>
         </div>
       </div>
 
@@ -277,6 +336,7 @@ function hideToTray() { wails()?.HideToTray() }
               <td>
                 <span v-if="a.disabled" class="badge dead">已禁用</span>
                 <span v-else-if="a.cooling" class="badge cool">冷却至 {{ a.until }}</span>
+                <span v-else-if="settings.creditFloor > 0 && a.credits <= settings.creditFloor" class="badge cool">低于阈值（保留 {{ settings.creditFloor }}）</span>
                 <span v-else class="badge ok">可用</span>
                 <div v-if="a.reason" style="color:var(--text-dim);font-size:11px">{{ a.reason }}</div>
               </td>
@@ -299,6 +359,63 @@ function hideToTray() { wails()?.HideToTray() }
       </div>
     </main>
 
+    <!-- 模型 -->
+    <main v-else-if="tab === 'models'" class="main">
+      <div class="row" style="margin-bottom:16px">
+        <h2 class="grow">模型</h2>
+        <button class="btn ghost" :disabled="modelsLoading" @click="loadModels(true)">
+          {{ modelsLoading ? '加载中…' : '刷新列表' }}
+        </button>
+      </div>
+
+      <div class="card" v-for="p in modelProviders" :key="p.key" style="margin-bottom:16px">
+        <div class="row" style="margin-bottom:12px">
+          <h2 style="font-size:15px">{{ p.label }}</h2>
+          <label class="switch" style="margin-left:8px" :title="settings[p.enabledKey] ? '点击关闭：不再消耗该上游积分' : '点击开启：正常使用该上游'">
+            <input type="checkbox" v-model="settings[p.enabledKey]" @change="toggleProvider(p)" />
+            <span class="slider"></span>
+          </label>
+          <span style="color:var(--text-dim);font-size:12px" v-if="!settings[p.enabledKey]">已关闭（不消耗积分）</span>
+          <span class="badge" :class="p.key" style="margin-left:4px">{{ models[p.key].length }} 个模型</span>
+        </div>
+        <div class="form-item">
+          <label>默认模型（客户端未指定模型时使用）</label>
+          <select v-model="settings[p.defaultKey]">
+            <option v-for="m in models[p.key]" :key="m.id" :value="m.id">
+              {{ m.name && m.name !== m.id ? m.name + '（' + m.id + '）' : m.id }}
+            </option>
+            <option v-if="!models[p.key].some(m => m.id === settings[p.defaultKey])" :value="settings[p.defaultKey]">
+              {{ settings[p.defaultKey] }}（当前配置，不在列表中）
+            </option>
+          </select>
+        </div>
+        <div style="max-height:320px;overflow:auto">
+          <table v-if="models[p.key].length > 0">
+            <thead>
+              <tr><th>模型 ID</th><th>名称</th><th>上下文</th><th>最大输出</th><th style="width:90px">操作</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="m in models[p.key]" :key="m.id" :class="{ 'default-row': m.id === settings[p.defaultKey] }">
+                <td class="mono">{{ m.id }}</td>
+                <td>{{ m.name || '–' }}</td>
+                <td>{{ fmtTokens(m.contextLength) }}</td>
+                <td>{{ fmtTokens(m.maxTokens) }}</td>
+                <td><button class="btn sm ghost" @click="copyModelId(p, m)">复制</button></td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="empty" style="padding:12px">
+            {{ modelsLoading ? '加载中…' : '暂无模型（登录账号后可动态获取，当前显示为静态回退表）' }}
+          </div>
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="btn" @click="saveSettings">保存设置</button>
+        <span style="color:var(--text-dim);font-size:12px">未选择时默认使用 DeepSeek v4 flash 正式版（deepseek-v4-flash）</span>
+      </div>
+    </main>
+
     <!-- 设置 -->
     <main v-else class="main">
       <h2>设置</h2>
@@ -316,6 +433,10 @@ function hideToTray() { wails()?.HideToTray() }
           </select>
         </div>
         <div class="form-item">
+          <label>积分保留阈值（账号余额 ≤ 该值时暂停使用，积分恢复后自动启用；0 = 不限制）</label>
+          <input type="number" v-model.number="settings.creditFloor" min="0" step="10" placeholder="0" />
+        </div>
+        <div class="form-item">
           <label>每日自动签到</label>
           <label class="switch">
             <input type="checkbox" v-model="settings.checkinEnabled" />
@@ -330,6 +451,13 @@ function hideToTray() { wails()?.HideToTray() }
           <label>启动时最小化到托盘</label>
           <label class="switch">
             <input type="checkbox" v-model="settings.startMinimized" />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="form-item">
+          <label>开机自动启动（写入当前用户注册表）</label>
+          <label class="switch">
+            <input type="checkbox" v-model="settings.autoStart" />
             <span class="slider"></span>
           </label>
         </div>

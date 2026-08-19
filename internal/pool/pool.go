@@ -53,6 +53,7 @@ func (e *entry) healthy(now time.Time) bool {
 type Pool struct {
 	mu    sync.RWMutex
 	byKey map[Key]*entry
+	floor int64 // 积分保留阈值（>0 时 credits <= floor 的账号不参与 chat 挑号；只读查询不受限）
 }
 
 // New 构建空池。
@@ -82,9 +83,22 @@ func (p *Pool) Sync(accounts []*auth.Account) {
 	}
 }
 
-// Pick 挑可用账号。provider 为空/"auto" 时跨上游全局挑；
-// tried 非空时跳过其中键（单请求轮换）。
-func (p *Pool) Pick(provider string, tried map[Key]bool) *auth.Account {
+// Pick 挑可用账号（chat 路径）。provider 为空/"auto" 时跨上游全局挑；
+// tried 非空时跳过其中键（单请求轮换）；
+// skip 非空时跳过其中的上游（UI 禁用开关，不消耗该上游积分）；
+// floor > 0 时跳过 credits <= floor 的账号（积分保留阈值：余额到线自动停用，
+// 后台积分回填/签到超过阈值后自动恢复可用）。
+func (p *Pool) Pick(provider string, tried map[Key]bool, skip map[string]bool) *auth.Account {
+	return p.pick(provider, tried, skip, true)
+}
+
+// PickForRead 只读场景挑号（模型列表查询等不消耗积分的操作），
+// 不应用积分保留阈值——账号低于阈值时仍可浏览其上游模型表。
+func (p *Pool) PickForRead(provider string) *auth.Account {
+	return p.pick(provider, nil, nil, false)
+}
+
+func (p *Pool) pick(provider string, tried map[Key]bool, skip map[string]bool, applyFloor bool) *auth.Account {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	now := time.Now()
@@ -93,10 +107,16 @@ func (p *Pool) Pick(provider string, tried map[Key]bool) *auth.Account {
 		if provider != "" && provider != "auto" && k.Provider != provider {
 			continue
 		}
+		if skip != nil && skip[k.Provider] {
+			continue
+		}
 		if tried != nil && tried[k] {
 			continue
 		}
 		if !e.healthy(now) {
+			continue
+		}
+		if applyFloor && p.floor > 0 && e.credits <= p.floor {
 			continue
 		}
 		if best == nil || e.credits > best.credits {
@@ -107,6 +127,23 @@ func (p *Pool) Pick(provider string, tried map[Key]bool) *auth.Account {
 		return nil
 	}
 	return best.a
+}
+
+// SetCreditFloor 设置积分保留阈值（<=0 关闭）。
+func (p *Pool) SetCreditFloor(floor int64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if floor < 0 {
+		floor = 0
+	}
+	p.floor = floor
+}
+
+// CreditFloor 当前积分保留阈值（0 = 未启用）。
+func (p *Pool) CreditFloor() int64 {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.floor
 }
 
 // Count 返回指定 provider 的可用账号数（provider 空 = 全部）。
