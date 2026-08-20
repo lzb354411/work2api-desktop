@@ -1,6 +1,6 @@
 # Work2API Desktop 开发文档
 
-> 适用版本：v1.2.0 ｜ 平台：Windows 10/11 ｜ 技术栈：Go 1.23 + Wails 2.10 + Vue 3 + systray
+> 适用版本：v1.4.0 ｜ 平台：Windows 10/11 ｜ 技术栈：Go 1.23 + Wails 2.10 + Vue 3 + systray
 
 本文档面向二次开发者，描述项目分层架构、关键数据流、安全设计与扩展点。终端用户使用说明见 [README.md](./README.md)。
 
@@ -14,6 +14,7 @@
 6. [安全设计](#6-安全设计)
 7. [构建与调试](#7-构建与调试)
 8. [扩展指南](#8-扩展指南)
+9. [版本记录](#9-版本记录)
 
 ---
 
@@ -483,11 +484,40 @@ const (
 
 ---
 
+## 9. 版本记录
+
+### v1.4.0（2026-08-20）— 移除 TraeWork，仅保留 WorkBuddy
+
+**变更摘要**：TRAE SOLO 相关功能实测不成功，本版彻底移除，统一为 WorkBuddy 单上游。
+- 删除 `internal/upstream/trae/`（6 文件）与 `internal/checkin/webengine.go`
+- 移除浏览器网页签到引擎及 `chromedp` 依赖
+- 账号池 / 模型路由 / 登录 / 签到 / 令牌刷新仅保留 WorkBuddy；通用组件与 WorkBuddy 功能不受影响
+
+**发布前版本号提升（独立提交，不含业务逻辑）**：
+- `internal/app/config.go`：`const Version = "1.3.0"` → `"1.4.0"`
+- `wails.json`：`info.productVersion` `"1.3.0"` → `"1.4.0"`
+
+**相关提交（main 分支，线性）**：
+
+| Commit    | 说明                                             |
+|-----------|--------------------------------------------------|
+| `5810a10` | refactor: remove all TraeWork support, keep WorkBuddy only（+154/-2499） |
+| `6af3eb5` | build: bump version to v1.4.0（版本号提升提交，含上述 2 处改动） |
+
+标签：`v1.4.0`（已推送到 origin，对应提交 `6af3eb5`）
+
+**发布产物**：
+- `work2api-desktop.exe`（12,209,664 B，约 12.2MB，Windows 10/11 单文件绿色版）
+- Release：https://github.com/lzb354411/work2api-desktop/releases/tag/v1.4.0
+- 直链：https://github.com/lzb354411/work2api-desktop/releases/download/v1.4.0/work2api-desktop.exe
+
+---
+
 ## 附录：关键常量速查
 
 | 常量             | 值                                   | 位置 |
 |------------------|--------------------------------------|------|
-| Version          | `1.2.0`                              | `app/config.go` |
+| Version          | `1.4.0`                              | `app/config.go` |
 | 默认端口         | `8317`                               | `app/config.go` |
 | 默认签到时间     | `09:05`                              | `app/config.go` |
 | API Key 长度     | 32 字符 hex（16 字节随机）           | `app/config.go#GenerateAPIKey` |
