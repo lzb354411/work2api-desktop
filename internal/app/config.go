@@ -15,7 +15,7 @@ import (
 )
 
 // Version 应用版本。
-const Version = "1.3.0"
+const Version = "1.4.0"
 
 // Config 应用配置（整体 DPAPI 加密落盘为 config.dat）。
 type Config struct {
