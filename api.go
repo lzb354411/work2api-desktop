@@ -40,16 +40,12 @@ type SettingsDTO struct {
 	CheckinTime     string `json:"checkinTime"`
 	StartMinimized  bool   `json:"startMinimized"`
 	AutoStart       bool   `json:"autoStart"`
-	TraeEnabled     bool   `json:"traeEnabled"`
 	WBEnabled       bool   `json:"wbEnabled"`
 	CreditFloor     int64  `json:"creditFloor"`
-	TraeCheckinMethod   string `json:"traeCheckinMethod"`   // browser | http
-	TraeWebAccountCount int    `json:"traeWebAccountCount"` // 网页签到账号数
 }
 
-// ModelsDTO 各上游模型列表视图。
+// ModelsDTO 上游模型列表视图。
 type ModelsDTO struct {
-	Trae      []server.ModelBrief `json:"trae"`
 	WorkBuddy []server.ModelBrief `json:"workbuddy"`
 }
 
@@ -92,11 +88,8 @@ func (a *API) GetSettings() SettingsDTO {
 		CheckinTime:     cfg.CheckinTime,
 		StartMinimized:  cfg.StartMinimized,
 		AutoStart:       cfg.AutoStart,
-		TraeEnabled:     cfg.ProviderEnabled(auth.ProviderTrae),
 		WBEnabled:       cfg.ProviderEnabled(auth.ProviderWorkBuddy),
 		CreditFloor:     cfg.CreditFloor,
-		TraeCheckinMethod:   cfg.TraeCheckinMethod,
-		TraeWebAccountCount: cfg.TraeWebAccountCount,
 	}
 }
 
@@ -105,26 +98,15 @@ func (a *API) SaveSettings(s SettingsDTO) (bool, error) {
 	if s.Port < 1024 || s.Port > 65535 {
 		return false, errString("端口必须在 1024-65535 之间")
 	}
-	if s.DefaultProvider != "trae" && s.DefaultProvider != "workbuddy" && s.DefaultProvider != "auto" {
-		return false, errString("默认上游必须是 trae / workbuddy / auto")
+	if s.DefaultProvider != "workbuddy" && s.DefaultProvider != "auto" {
+		return false, errString("默认上游必须是 workbuddy / auto")
 	}
 	// 积分保留阈值：负数拒绝（0 = 不限制）
 	if s.CreditFloor < 0 {
 		return false, errString("积分保留阈值不能为负数（0 = 不限制）")
 	}
-	// Trae 签到方式：仅允许 browser / http
-	if s.TraeCheckinMethod != "browser" && s.TraeCheckinMethod != "http" {
-		return false, errString("Trae 签到方式必须是 browser 或 http")
-	}
-	// 网页签到账号数：1-10
-	if s.TraeWebAccountCount < 1 || s.TraeWebAccountCount > 10 {
-		return false, errString("网页签到账号数必须在 1-10 之间")
-	}
-	// 上游开关：两个都关会没有任何可用账号，前端已提示，这里仍允许（用户自己负责）
+	// 上游开关：全关会没有任何可用账号，前端已提示，这里仍允许（用户自己负责）
 	var disabled []string
-	if !s.TraeEnabled {
-		disabled = append(disabled, auth.ProviderTrae)
-	}
 	if !s.WBEnabled {
 		disabled = append(disabled, auth.ProviderWorkBuddy)
 	}
@@ -137,22 +119,17 @@ func (a *API) SaveSettings(s SettingsDTO) (bool, error) {
 		AutoStart:         s.AutoStart,
 		CreditFloor:       s.CreditFloor,
 		DisabledProviders: disabled,
-		TraeCheckinMethod:   s.TraeCheckinMethod,
-		TraeWebAccountCount: s.TraeWebAccountCount,
 	}
 	return a.core.UpdateConfig(nc)
 }
 
-// ListModels 各上游模型列表（动态优先，静态兜底，带 1h 缓存）。
+// ListModels 上游模型列表（动态优先，静态兜底，带 1h 缓存）。
 func (a *API) ListModels() ModelsDTO {
-	t, w := a.core.Models()
-	if t == nil {
-		t = []server.ModelBrief{}
-	}
+	w := a.core.Models()
 	if w == nil {
 		w = []server.ModelBrief{}
 	}
-	return ModelsDTO{Trae: t, WorkBuddy: w}
+	return ModelsDTO{WorkBuddy: w}
 }
 
 // RefreshModels 清空缓存强制重拉模型列表并返回。
@@ -215,21 +192,6 @@ func (a *API) CheckinNow(provider, uid string) (string, error) {
 // CheckinAllNow 一键全签所有账号，返回统计摘要。
 func (a *API) CheckinAllNow() (string, error) {
 	return a.core.CheckinAllNow()
-}
-
-// StartTraeWebLogin 发起某网页账号的首次登录（有头 Edge，手机+验证码）。
-func (a *API) StartTraeWebLogin(index int) error {
-	return a.core.StartTraeWebLogin(index)
-}
-
-// CheckinTraeWebNow 手动签到单个网页账号。
-func (a *API) CheckinTraeWebNow(index int) (string, error) {
-	return a.core.CheckinTraeWebNow(index)
-}
-
-// TraeWebStatus 各网页账号登录态与最近签到日期。
-func (a *API) TraeWebStatus() []map[string]any {
-	return a.core.TraeWebStatus()
 }
 
 // RefreshCreditsNow 手动刷新积分。

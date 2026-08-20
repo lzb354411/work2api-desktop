@@ -1,4 +1,4 @@
-// Package auth 统一账号凭据模型（TRAE SOLO + WorkBuddy 双上游）与加密存储。
+// Package auth 统一账号凭据模型（WorkBuddy 上游）与加密存储。
 //
 // 安全设计：
 //   - 凭据整体存入 accounts.dat（DPAPI 静态加密，绑定当前 Windows 用户）
@@ -16,10 +16,7 @@ import (
 )
 
 // Provider 上游类型。
-const (
-	ProviderTrae      = "trae"
-	ProviderWorkBuddy = "workbuddy"
-)
+const ProviderWorkBuddy = "workbuddy"
 
 var uidPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
@@ -30,14 +27,11 @@ func ValidUID(uid string) bool { return uidPattern.MatchString(uid) }
 type Account struct {
 	mu sync.RWMutex
 
-	Provider     string // trae | workbuddy
+	Provider     string // workbuddy
 	AccessToken  string
 	RefreshToken string
 	ExpiresAt    int64  // Unix 秒
-	Domain       string // workbuddy 区域判定 / trae 固定 "trae.cn"
-	ApiHost      string // trae: ExchangeToken host
-	MachineID    string // trae: x-machine-id
-	DeviceID     string // trae: x-device-id
+	Domain       string // workbuddy 区域判定
 	UID          string
 	EnterpriseID string
 	Nickname     string
@@ -51,9 +45,6 @@ type Snapshot struct {
 	RefreshToken string
 	ExpiresAt    int64
 	Domain       string
-	ApiHost      string
-	MachineID    string
-	DeviceID     string
 	UID          string
 	EnterpriseID string
 	Nickname     string
@@ -68,9 +59,6 @@ func (a *Account) Snap() Snapshot {
 		RefreshToken: a.RefreshToken,
 		ExpiresAt:    a.ExpiresAt,
 		Domain:       a.Domain,
-		ApiHost:      a.ApiHost,
-		MachineID:    a.MachineID,
-		DeviceID:     a.DeviceID,
 		UID:          a.UID,
 		EnterpriseID: a.EnterpriseID,
 		Nickname:     a.Nickname,
@@ -96,7 +84,7 @@ func (a *Account) NeedsRefresh(within time.Duration) bool {
 	return a.NeedsRefreshLocked(within)
 }
 
-// Region 返回 workbuddy 区域（cn/global）；trae 账号返回空。
+// Region 返回 workbuddy 区域（cn/global）。
 func (a *Account) Region() string {
 	s := a.Snap()
 	if s.Provider != ProviderWorkBuddy {
@@ -119,9 +107,6 @@ type accountJSON struct {
 	RefreshToken string `json:"refreshToken"`
 	ExpiresAt    int64  `json:"expiresAt"`
 	Domain       string `json:"domain,omitempty"`
-	ApiHost      string `json:"apiHost,omitempty"`
-	MachineID    string `json:"machineId,omitempty"`
-	DeviceID     string `json:"deviceId,omitempty"`
 	UID          string `json:"uid"`
 	EnterpriseID string `json:"enterpriseId,omitempty"`
 	Nickname     string `json:"nickname,omitempty"`
@@ -136,9 +121,6 @@ func (a *Account) Marshal() accountJSON {
 		RefreshToken: s.RefreshToken,
 		ExpiresAt:    s.ExpiresAt,
 		Domain:       s.Domain,
-		ApiHost:      s.ApiHost,
-		MachineID:    s.MachineID,
-		DeviceID:     s.DeviceID,
 		UID:          s.UID,
 		EnterpriseID: s.EnterpriseID,
 		Nickname:     s.Nickname,
@@ -147,7 +129,7 @@ func (a *Account) Marshal() accountJSON {
 
 // UnmarshalAccount 从 JSON 形态还原。
 func UnmarshalAccount(j accountJSON) (*Account, error) {
-	if j.Provider != ProviderTrae && j.Provider != ProviderWorkBuddy {
+	if j.Provider != ProviderWorkBuddy {
 		return nil, fmt.Errorf("unknown provider %q", j.Provider)
 	}
 	if j.UID != "" && !ValidUID(j.UID) {
@@ -162,9 +144,6 @@ func UnmarshalAccount(j accountJSON) (*Account, error) {
 		RefreshToken: j.RefreshToken,
 		ExpiresAt:    j.ExpiresAt,
 		Domain:       j.Domain,
-		ApiHost:      j.ApiHost,
-		MachineID:    j.MachineID,
-		DeviceID:     j.DeviceID,
 		UID:          j.UID,
 		EnterpriseID: j.EnterpriseID,
 		Nickname:     j.Nickname,

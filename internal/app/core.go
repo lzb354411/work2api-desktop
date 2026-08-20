@@ -11,10 +11,8 @@ import (
 	"time"
 
 	"work2api-desktop/internal/auth"
-	"work2api-desktop/internal/checkin"
 	"work2api-desktop/internal/pool"
 	"work2api-desktop/internal/server"
-	"work2api-desktop/internal/upstream/trae"
 	"work2api-desktop/internal/upstream/workbuddy"
 )
 
@@ -23,11 +21,10 @@ type Core struct {
 	mu      sync.RWMutex
 	cfg     *Config
 	cfgPath string
-	dataDir string // %APPDATA%\work2api-desktop，网页签到 profile 存放于此
+	dataDir string // %APPDATA%\work2api-desktop
 
 	Store *auth.Store
 	Pool  *pool.Pool
-	Trae  *trae.Client
 	WB    *workbuddy.Client
 	Log   *RingLog
 
@@ -41,12 +38,9 @@ type Core struct {
 }
 
 type loginSession struct {
-	provider string // trae | workbuddy
+	provider string // workbuddy
 	status   string // pending | done | error
 	err      string
-	// TRAE 专用
-	traeCtx   *trae.LoginContext
-	listener  net.Listener
 	// WorkBuddy 专用
 	wbState *workbuddy.LoginSession
 	// 完成的账号（脱敏视图）
@@ -82,7 +76,6 @@ func NewCore() (*Core, error) {
 		dataDir: dir,
 		Store:   store,
 		Pool:    pool.New(),
-		Trae:    trae.New(func(f string, a ...any) { log.Logf("info", f, a...) }),
 		WB:      workbuddy.New(func(f string, a ...any) { log.Logf("info", f, a...) }),
 		Log:     log,
 	}
@@ -138,18 +131,12 @@ func (c *Core) Stop() {
 		defer cancel()
 		_ = srv.Shutdown(ctx)
 	}
-	c.loginMu.Lock()
-	if c.login != nil && c.login.listener != nil {
-		_ = c.login.listener.Close()
-	}
-	c.loginMu.Unlock()
 }
 
 func (c *Core) startServerLocked(port int) error {
 	h := server.New(server.Deps{
 		Pool:  c.Pool,
 		Store: c.Store,
-		Trae:  c.Trae,
 		WB:    c.WB,
 		APIKey: func() string {
 			c.mu.RLock()
@@ -269,10 +256,6 @@ const (
 	refreshEvery = 5 * time.Minute
 	creditsEvery = 30 * time.Minute
 	errCooldown  = 10 * time.Minute
-
-	// 签到领取瞬时繁忙(9074)时的重试：次数与间隔
-	checkinClaimRetries   = 3
-	checkinClaimRetryWait = 5 * time.Second
 )
 
 func (c *Core) tokenRefreshLoop() {
@@ -287,15 +270,10 @@ func (c *Core) refreshAllTokens() {
 	changed := false
 	for _, a := range c.Store.List() {
 		s := a.Snap()
-		var err error
-		switch s.Provider {
-		case auth.ProviderTrae:
-			_, err = c.Trae.RefreshTokenIfNeeded(a, refreshSkew)
-		case auth.ProviderWorkBuddy:
-			_, err = c.WB.RefreshTokenIfNeeded(a, refreshSkew)
-		default:
+		if s.Provider != auth.ProviderWorkBuddy {
 			continue
 		}
+		_, err := c.WB.RefreshTokenIfNeeded(a, refreshSkew)
 		if err != nil {
 			c.logf("warn", "refresh %s/%s failed: %v", s.Provider, s.UID, desensitizeErr(err))
 			c.Pool.Cooldown(s.Provider, s.UID, errCooldown, "token refresh failed")
@@ -330,23 +308,10 @@ func (c *Core) refreshAllCredits() {
 
 func (c *Core) fetchCredits(a *auth.Account) (int64, error) {
 	s := a.Snap()
-	switch s.Provider {
-	case auth.ProviderTrae:
-		remain, err := c.Trae.UserEntUsage(a)
-		if err != nil {
-			return 0, err
-		}
-		// 显示积分 = 权益包剩余额度 + 签到积分池（两套独立积分体系）
-		_, checkin, _, _, err := c.Trae.CheckinStatus(a)
-		if err != nil {
-			c.logf("warn", "checkin credits %s query failed: %v", s.UID, desensitizeErr(err))
-			return remain, nil
-		}
-		return remain + checkin, nil
-	case auth.ProviderWorkBuddy:
-		return c.WB.UserResource(a)
+	if s.Provider != auth.ProviderWorkBuddy {
+		return 0, fmt.Errorf("unknown provider")
 	}
-	return 0, fmt.Errorf("unknown provider")
+	return c.WB.UserResource(a)
 }
 
 // checkinLoop 每日定时签到。
@@ -373,20 +338,12 @@ func (c *Core) checkinLoop() {
 func (c *Core) runCheckinAll() {
 	c.mu.RLock()
 	enabled := c.cfg.CheckinEnabled
-	method := c.cfg.TraeCheckinMethod
 	c.mu.RUnlock()
 	if !enabled {
 		return
 	}
-	// Trae 签到在 browser 模式下由网页引擎统一处理（独立于 OAuth 账号列表）
-	if method == "browser" {
-		c.runTraeWebCheckinAll()
-	}
 	for _, a := range c.Store.List() {
 		s := a.Snap()
-		if s.Provider == auth.ProviderTrae && method == "browser" {
-			continue // Trae 签到已改由网页引擎处理
-		}
 		if _, err := c.checkinOne(a); err != nil {
 			c.logf("warn", "checkin %s/%s failed: %v", s.Provider, s.UID, desensitizeErr(err))
 		}
@@ -395,53 +352,15 @@ func (c *Core) runCheckinAll() {
 }
 
 // checkinOne 单账号签到，返回结果描述（供 UI 提示与诊断）。
-// TRAE：enable=false 或已签到时不调用领取接口，明确告知而非静默"成功"。
 func (c *Core) checkinOne(a *auth.Account) (string, error) {
 	s := a.Snap()
-	switch s.Provider {
-	case auth.ProviderTrae:
-		// 浏览器模式下，Trae 签到由网页引擎统一处理，OAuth 账号不再走 HTTP（会 9074）
-		if c.cfg.TraeCheckinMethod == "browser" {
-			return "Trae 签到已由网页模式接管，请在「网页签到」中操作", nil
-		}
-		checked, _, enable, raw, err := c.Trae.CheckinStatus(a)
-		if err != nil {
-			return "", err
-		}
-		c.logf("info", "checkin status %s: %s", s.UID, raw)
-		if !enable {
-			return "签到未生效（接口返回 enable=false，详见日志）", nil
-		}
-		if checked {
-			return "今日已签到，无需重复", nil
-		}
-		claimRaw, err := c.Trae.CheckinClaim(a)
-		if err != nil {
-			c.logf("warn", "checkin claim %s failed: %v", s.UID, desensitizeErr(err))
-			// 9074（参与用户太多）为瞬时繁忙，短暂重试后再如实上报
-			if errors.Is(err, trae.ErrCheckinBusy) {
-				for i := 0; i < checkinClaimRetries; i++ {
-					time.Sleep(checkinClaimRetryWait)
-					claimRaw, err = c.Trae.CheckinClaim(a)
-					if err == nil {
-						break
-					}
-					c.logf("warn", "checkin claim %s retry %d/%d: %v", s.UID, i+1, checkinClaimRetries, desensitizeErr(err))
-				}
-			}
-			if err != nil {
-				return "", err
-			}
-		}
-		c.logf("info", "checkin claim %s: %s", s.UID, claimRaw)
-		return "签到成功", nil
-	case auth.ProviderWorkBuddy:
-		if err := c.WB.DailyCheckin(a); err != nil {
-			return "", err
-		}
-		return "签到成功", nil
+	if s.Provider != auth.ProviderWorkBuddy {
+		return "", fmt.Errorf("unknown provider")
 	}
-	return "", fmt.Errorf("unknown provider")
+	if err := c.WB.DailyCheckin(a); err != nil {
+		return "", err
+	}
+	return "签到成功", nil
 }
 
 func nextRunTime(hhmm string) (time.Time, error) {
@@ -498,33 +417,9 @@ func (c *Core) CheckinNow(provider, uid string) (string, error) {
 
 // CheckinAllNow 一键全签所有账号，返回统计摘要。
 func (c *Core) CheckinAllNow() (string, error) {
-	c.mu.RLock()
-	method := c.cfg.TraeCheckinMethod
-	c.mu.RUnlock()
 	var ok, skip, fail int
-	if method == "browser" {
-		n := c.cfg.TraeWebAccountCount
-		for i := 1; i <= n; i++ {
-			res, err := checkin.Checkin(c.dataDir, i, c.logf)
-			if err != nil {
-				fail++
-				c.logf("warn", "trae web acc%d failed: %v", i, desensitizeErr(err))
-				continue
-			}
-			if res.State == "success" {
-				ok++
-			} else if res.State == "need_login" {
-				skip++
-			} else {
-				fail++
-			}
-		}
-	}
 	for _, a := range c.Store.List() {
 		s := a.Snap()
-		if s.Provider == auth.ProviderTrae && method == "browser" {
-			continue
-		}
 		msg, err := c.checkinOne(a)
 		if err != nil {
 			fail++
@@ -541,60 +436,7 @@ func (c *Core) CheckinAllNow() (string, error) {
 	if fail > 0 {
 		return fmt.Sprintf("全部签到完成：成功 %d，跳过 %d，失败 %d（详见日志）", ok, skip, fail), nil
 	}
-	return fmt.Sprintf("全部签到完成：成功 %d，跳过 %d（已签到/未生效/需登录）", ok, skip), nil
-}
-
-// ---------------------------------------------------------------------------
-// Trae 网页签到（浏览器引擎，独立于 OAuth 账号列表）
-// ---------------------------------------------------------------------------
-
-// runTraeWebCheckinAll 遍历全部网页账号（隔离 profile）执行无头签到。
-func (c *Core) runTraeWebCheckinAll() {
-	n := c.cfg.TraeWebAccountCount
-	for i := 1; i <= n; i++ {
-		res, err := checkin.Checkin(c.dataDir, i, c.logf)
-		if err != nil {
-			c.logf("warn", "trae web acc%d: %v", i, desensitizeErr(err))
-			continue
-		}
-		c.logf("info", "trae web acc%d: %s", i, res.Detail)
-	}
-}
-
-// CheckinTraeWebNow 手动签到单个网页账号（前端按 index 调用）。
-func (c *Core) CheckinTraeWebNow(index int) (string, error) {
-	if index < 1 || index > c.cfg.TraeWebAccountCount {
-		return "", fmt.Errorf("invalid web account index")
-	}
-	res, err := checkin.Checkin(c.dataDir, index, c.logf)
-	if err != nil {
-		return "", err
-	}
-	return res.Detail, nil
-}
-
-// StartTraeWebLogin 发起某网页账号的首次登录：启动有头 Edge 等待用户手机+验证码登录。
-// 最长等待 5 分钟；成功后会话持久化，之后无需再输入。
-func (c *Core) StartTraeWebLogin(index int) error {
-	if index < 1 || index > c.cfg.TraeWebAccountCount {
-		return fmt.Errorf("invalid web account index")
-	}
-	return checkin.FirstLogin(c.dataDir, index, 5*time.Minute, c.logf)
-}
-
-// TraeWebStatus 各网页账号的登录态与最近签到日期（前端展示用）。
-func (c *Core) TraeWebStatus() []map[string]any {
-	n := c.cfg.TraeWebAccountCount
-	out := make([]map[string]any, 0, n)
-	for i := 1; i <= n; i++ {
-		st := checkin.ReadStatus(c.dataDir, i)
-		out = append(out, map[string]any{
-			"index":       i,
-			"loggedIn":    st.LoggedIn,
-			"lastCheckin": st.LastCheckin,
-		})
-	}
-	return out
+	return fmt.Sprintf("全部签到完成：成功 %d，跳过 %d（已签到/未生效）", ok, skip), nil
 }
 
 // RefreshCreditsNow 手动刷新单个账号积分。
@@ -644,15 +486,15 @@ func (c *Core) UptimeMs() int64 {
 // 模型列表
 // ---------------------------------------------------------------------------
 
-// Models 两个上游各自的模型列表（动态优先，静态兜底）。
-func (c *Core) Models() (traeModels, wbModels []server.ModelBrief) {
+// Models 上游各自的模型列表（动态优先，静态兜底）。
+func (c *Core) Models() (wbModels []server.ModelBrief) {
 	c.mu.RLock()
 	h := c.apiH
 	c.mu.RUnlock()
 	if h == nil {
-		return nil, nil
+		return nil
 	}
-	return h.ListProviderModels(auth.ProviderTrae), h.ListProviderModels(auth.ProviderWorkBuddy)
+	return h.ListProviderModels(auth.ProviderWorkBuddy)
 }
 
 // RefreshModels 清空缓存强制重拉模型列表。

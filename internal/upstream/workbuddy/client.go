@@ -16,8 +16,10 @@ import (
 	"time"
 
 	"work2api-desktop/internal/auth"
-	"work2api-desktop/internal/upstream/trae"
 )
+
+// LogFunc 脱敏日志函数类型。
+type LogFunc func(format string, args ...any)
 
 // ErrKind 错误分类。
 type ErrKind int
@@ -117,11 +119,11 @@ type Client struct {
 	ChatBaseGlobal  string
 	BillingBaseGlob string
 
-	log trae.LogFunc
+	log LogFunc
 }
 
 // New 生产默认值。
-func New(log trae.LogFunc) *Client {
+func New(log LogFunc) *Client {
 	tr := &http.Transport{
 		MaxIdleConns:        100,
 		MaxIdleConnsPerHost: 20,
@@ -296,7 +298,7 @@ func (c *Client) ChatStream(a *auth.Account, body []byte) (rc io.ReadCloser, sta
 	return newIdleWatchdog(resp.Body, 5*time.Minute), resp.StatusCode, nil, nil
 }
 
-// idleWatchdog 与 trae 包同构：读空闲超时强制断开。
+// idleWatchdog 读空闲超时强制断开 SSE 连接。
 type idleWatchdog struct {
 	rc      io.ReadCloser
 	timeout time.Duration

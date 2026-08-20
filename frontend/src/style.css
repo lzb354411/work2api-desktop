@@ -112,7 +112,6 @@ tr:hover td { background: rgba(255,255,255,.02); }
   font-size: 11px;
   font-weight: 600;
 }
-.badge.trae { background: rgba(79,140,255,.15); color: var(--accent); }
 .badge.workbuddy { background: rgba(62,207,142,.15); color: var(--green); }
 .badge.ok { background: rgba(62,207,142,.15); color: var(--green); }
 .badge.cool { background: rgba(230,162,60,.15); color: var(--orange); }

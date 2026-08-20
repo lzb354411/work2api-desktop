@@ -1,7 +1,7 @@
 // Package server OpenAI 兼容 HTTP 接口：/v1/models + /v1/chat/completions + /status。
 //
-// 路由规则：模型名带 trae/ 前缀走 TRAE、wb/ 走 WorkBuddy（前缀剥离后透传）；
-// 无前缀按配置的默认上游（trae|workbuddy|auto）。
+// 路由规则：模型名带 wb/ 前缀走 WorkBuddy（前缀剥离后透传）；
+// 无前缀按配置的默认上游（workbuddy|auto）。
 //
 // 安全加固（相对原版）：
 //   - 默认仅监听 127.0.0.1（由 app 层控制，本包不开放 0.0.0.0 默认值）
@@ -11,7 +11,6 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,7 +20,6 @@ import (
 
 	"work2api-desktop/internal/auth"
 	"work2api-desktop/internal/pool"
-	"work2api-desktop/internal/upstream/trae"
 	"work2api-desktop/internal/upstream/workbuddy"
 )
 
@@ -29,10 +27,9 @@ import (
 type Deps struct {
 	Pool            *pool.Pool
 	Store           *auth.Store
-	Trae            *trae.Client
 	WB              *workbuddy.Client
 	APIKey          func() string
-	DefaultProvider func() string           // trae | workbuddy | auto
+	DefaultProvider func() string           // workbuddy | auto
 	ProviderEnabled func(provider string) bool // 上游启用状态（UI 开关；nil = 全部启用）
 	Logf            func(format string, args ...any)
 }
@@ -87,18 +84,12 @@ type ModelBrief struct {
 	MaxTokens int64  `json:"maxTokens"`
 }
 
-// ListProviderModels 指定上游的模型列表（动态优先，静态兜底）。provider: trae|workbuddy。
+// ListProviderModels 指定上游的模型列表（动态优先，静态兜底）。provider: workbuddy。
 func (h *Handler) ListProviderModels(provider string) []ModelBrief {
-	var fallback []modelEntry
-	switch provider {
-	case auth.ProviderTrae:
-		fallback = staticTraeModels
-	case auth.ProviderWorkBuddy:
-		fallback = staticWBModels
-	default:
+	if provider != auth.ProviderWorkBuddy {
 		return []ModelBrief{}
 	}
-	entries := h.providerModels(provider, fallback)
+	entries := h.providerModels(auth.ProviderWorkBuddy, staticWBModels)
 	out := make([]ModelBrief, 0, len(entries))
 	for _, e := range entries {
 		out = append(out, ModelBrief{ID: e.ID, Name: e.Name, Context: e.ContextLength, MaxTokens: e.MaxTokens})
@@ -106,14 +97,13 @@ func (h *Handler) ListProviderModels(provider string) []ModelBrief {
 	return out
 }
 
-// RefreshModels 清空模型缓存并重新拉取两个上游（UI 手动刷新用）。
+// RefreshModels 清空模型缓存并重新拉取上游（UI 手动刷新用）。
 func (h *Handler) RefreshModels() {
 	h.modelsMu.Lock()
 	h.modelsCache = map[string][]modelEntry{}
 	h.modelsFetched = time.Time{}
 	h.modelsFail = time.Time{}
 	h.modelsMu.Unlock()
-	h.providerModels(auth.ProviderTrae, staticTraeModels)
 	h.providerModels(auth.ProviderWorkBuddy, staticWBModels)
 }
 
@@ -183,27 +173,7 @@ func secureEqualBearer(authz, key string) bool {
 // ---------------------------------------------------------------------------
 
 // 静态回退模型表（动态接口失败时兜底）。
-// 数据取自 2026-08 实测：TRAE get_detail_param 可见模型（过滤 is_invisible_to_user），
-// WorkBuddy console/models 的 cli 交集。
-var staticTraeModels = []modelEntry{
-	{ID: "DeepSeek-V4-Flash-Official", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "DeepSeek-V4-Flash 正式版", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "DeepSeek-V4-Pro-Official", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "DeepSeek-V4-Pro 正式版", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "DeepSeek-V4-Flash", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "DeepSeek-V4-Flash", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "DeepSeek-V4-Pro", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "DeepSeek-V4-Pro", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "deepseek-v4-flash", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "DeepSeek-V4-Flash", ContextLength: 200000, MaxTokens: 16000},
-	{ID: "glm-5.2", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "GLM-5.2", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "glm-5", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "GLM-5", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "kimi-k3", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "Kimi-K3", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "kimi-k2.7-code", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "Kimi-K2.7-Code", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "kimi-k2.6", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "Kimi-K2.6", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "minimax-m3", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "MiniMax-M3", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "qwen3.8-max", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "Qwen3.8-Max", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "qwen-3.7-plus", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "Qwen3.7-Plus", ContextLength: 200000, MaxTokens: 32000},
-	{ID: "Doubao-Seed-2.1-Pro", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "Seed-2.1-Pro", ContextLength: 232768, MaxTokens: 32768},
-	{ID: "Doubao-Seed-2.1-Turbo", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "Seed-2.1-Turbo", ContextLength: 232768, MaxTokens: 32768},
-	{ID: "custom_model_gemini", Object: "model", Created: 1753600000, OwnedBy: "trae", Name: "Gemini-3.1-Pro-Preview", ContextLength: 300000, MaxTokens: 32000},
-}
-
+// 数据取自 2026-08 实测：WorkBuddy console/models 的 cli 交集。
 var staticWBModels = []modelEntry{
 	{ID: "deepseek-v4-flash", Object: "model", Created: 1753600000, OwnedBy: "workbuddy", Name: "Deepseek-V4-Flash", ContextLength: 1000000, MaxTokens: 50000},
 	{ID: "deepseek-v4-pro", Object: "model", Created: 1753600000, OwnedBy: "workbuddy", Name: "Deepseek-V4-Pro", ContextLength: 1000000, MaxTokens: 50000},
@@ -220,9 +190,7 @@ var staticWBModels = []modelEntry{
 }
 
 func (h *Handler) models(w http.ResponseWriter, r *http.Request) {
-	out := make([]modelEntry, 0, 16)
-	out = append(out, h.providerModels(auth.ProviderTrae, staticTraeModels)...)
-	out = append(out, h.providerModels(auth.ProviderWorkBuddy, staticWBModels)...)
+	out := h.providerModels(auth.ProviderWorkBuddy, staticWBModels)
 	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": out})
 }
 
@@ -243,24 +211,13 @@ func (h *Handler) providerModels(provider string, fallback []modelEntry) []model
 		return fallback
 	}
 
-	// 动态拉取：任一该上游健康账号（只读挑号：不受启用开关与积分保留阈值限制，
+	// 动态拉取：某健康账号（只读挑号：不受启用开关与积分保留阈值限制，
 	// 关闭上游或账号低于阈值后仍可浏览其模型表并选择默认模型）
-	var infos any
-	var err error
 	acct := h.d.Pool.PickForRead(provider)
 	if acct == nil {
 		return fallback
 	}
-	switch provider {
-	case auth.ProviderTrae:
-		var m []trae.ModelInfo
-		m, err = h.d.Trae.FetchModels(acct)
-		infos = m
-	case auth.ProviderWorkBuddy:
-		var m []workbuddy.ModelInfo
-		m, err = h.d.WB.FetchModels(acct)
-		infos = m
-	}
+	models, err := h.d.WB.FetchModels(acct)
 	if err != nil {
 		h.modelsMu.Lock()
 		h.modelsFail = time.Now()
@@ -271,17 +228,10 @@ func (h *Handler) providerModels(provider string, fallback []modelEntry) []model
 		return fallback
 	}
 
-	entries := make([]modelEntry, 0)
-	switch v := infos.(type) {
-	case []trae.ModelInfo:
-		for _, m := range v {
-			entries = append(entries, modelEntry{ID: m.ID, Object: "model", Created: 1753600000, OwnedBy: "trae", Name: m.Name, ContextLength: m.ContextWindow, MaxTokens: m.MaxTokens})
-		}
-	case []workbuddy.ModelInfo:
-		for _, m := range v {
-			// 上下文取上游 maxInputTokens（FetchModels 已解析）；0 = 上游未返回，前端显示为未知
-			entries = append(entries, modelEntry{ID: m.ID, Object: "model", Created: 1753600000, OwnedBy: "workbuddy", Name: m.Name, ContextLength: m.ContextWindow, MaxTokens: m.MaxTokens})
-		}
+	entries := make([]modelEntry, 0, len(models))
+	for _, m := range models {
+		// 上下文取上游 maxInputTokens（FetchModels 已解析）；0 = 上游未返回，前端显示为未知
+		entries = append(entries, modelEntry{ID: m.ID, Object: "model", Created: 1753600000, OwnedBy: "workbuddy", Name: m.Name, ContextLength: m.ContextWindow, MaxTokens: m.MaxTokens})
 	}
 	if len(entries) == 0 {
 		return fallback
@@ -326,15 +276,13 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 未指定模型（空模型名）→ 按实际路由到的上游补各自默认模型（DeepSeek v4 flash 正式版）。
-	// auto 模式下同一请求可能轮换到不同上游，为两套上游各准备一份 body。
-	var traeBody, wbBody []byte
+	// 未指定模型（空模型名）→ 补 WorkBuddy 默认模型（DeepSeek v4 flash 正式版）。
+	var wbBody []byte
 	if cleanModel == "" {
-		traeBody = withModel(body, h.modelDefault(auth.ProviderTrae))
 		wbBody = withModel(body, h.modelDefault(auth.ProviderWorkBuddy))
 	}
 
-	// 上游启用开关：显式路由（前缀/默认上游）到被禁用上游 → 403；
+	// 上游启用开关：显式路由到被禁用上游 → 403；
 	// auto 模式只从启用上游中挑号，不消耗被禁用上游的积分。
 	if provider != "auto" && !h.providerEnabled(provider) {
 		writeOpenAIError(w, http.StatusForbidden, "provider_disabled",
@@ -342,16 +290,8 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var skip map[string]bool
-	if provider == "auto" {
-		if !h.providerEnabled(auth.ProviderTrae) || !h.providerEnabled(auth.ProviderWorkBuddy) {
-			skip = map[string]bool{}
-			if !h.providerEnabled(auth.ProviderTrae) {
-				skip[auth.ProviderTrae] = true
-			}
-			if !h.providerEnabled(auth.ProviderWorkBuddy) {
-				skip[auth.ProviderWorkBuddy] = true
-			}
-		}
+	if provider == "auto" && !h.providerEnabled(auth.ProviderWorkBuddy) {
+		skip = map[string]bool{auth.ProviderWorkBuddy: true}
 	}
 
 	tried := map[pool.Key]bool{}
@@ -366,13 +306,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 
 		// token 临近过期 → 先刷新（失败冷却/禁用换号）
 		if acct.NeedsRefresh(refreshSkew) {
-			var rerr error
-			if s.Provider == auth.ProviderTrae {
-				rerr = h.d.Trae.RefreshToken(acct)
-			} else {
-				rerr = h.d.WB.RefreshToken(acct)
-			}
-			if rerr != nil {
+			if rerr := h.d.WB.RefreshToken(acct); rerr != nil {
 				h.d.Pool.Cooldown(s.Provider, s.UID, errCooldown, "refresh failed")
 				lastMsg = desensitize(rerr.Error())
 				continue
@@ -381,17 +315,6 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 			s = acct.Snap()
 		}
 
-		if s.Provider == auth.ProviderTrae {
-			b := body
-			if traeBody != nil {
-				b = traeBody
-			}
-			done := h.chatViaTrae(w, acct, b, peek.Stream)
-			if done {
-				return
-			}
-			continue
-		}
 		b := body
 		if wbBody != nil {
 			b = wbBody
@@ -413,10 +336,7 @@ func (h *Handler) chatCompletions(w http.ResponseWriter, r *http.Request) {
 // routeModel 模型名 → (provider, cleanModel)。前缀路由 > 默认配置。
 func routeModel(model, defaultProvider string) (provider, clean string) {
 	clean = strings.TrimSpace(model)
-	switch {
-	case strings.HasPrefix(clean, "trae/"):
-		return auth.ProviderTrae, strings.TrimPrefix(clean, "trae/")
-	case strings.HasPrefix(clean, "wb/"):
+	if strings.HasPrefix(clean, "wb/") {
 		return auth.ProviderWorkBuddy, strings.TrimPrefix(clean, "wb/")
 	}
 	if defaultProvider == "" || defaultProvider == "auto" {
@@ -425,9 +345,8 @@ func routeModel(model, defaultProvider string) (provider, clean string) {
 	return defaultProvider, clean
 }
 
-// fallbackDefaultModels 内置回退默认模型（各上游 DeepSeek v4 flash 正式版，实测 ID）。
+// fallbackDefaultModels 内置回退默认模型（WorkBuddy DeepSeek v4 flash，实测 ID）。
 var fallbackDefaultModels = map[string]string{
-	auth.ProviderTrae:      "DeepSeek-V4-Flash-Official",
 	auth.ProviderWorkBuddy: "deepseek-v4-flash",
 }
 
@@ -449,45 +368,8 @@ func withModel(body []byte, model string) []byte {
 	return body
 }
 
-// chatViaTrae 单账号 TRAE 请求。返回 true 表示响应已写完（无论成败）；
+// chatViaWorkBuddy 单账号 WorkBuddy 请求。返回 true 表示响应已写完（无论成败）；
 // false 表示可轮换下一账号（已计入冷却）。
-func (h *Handler) chatViaTrae(w http.ResponseWriter, acct *auth.Account, body []byte, stream bool) bool {
-	s := acct.Snap()
-	rc, status, respBody, err := h.d.Trae.ChatStream(acct, body)
-	if err != nil {
-		h.d.Pool.NoteError(s.Provider, s.UID, errThreshold, errCooldown)
-		return false
-	}
-	if status >= 400 {
-		h.applyUpstreamError(s.Provider, s.UID, trae.Classify(status, string(respBody)), "upstream")
-		return false
-	}
-	defer rc.Close()
-	h.d.Pool.NoteSuccess(s.Provider, s.UID)
-	if stream {
-		_ = trae.StreamWithError(w, rc, func(se *trae.SOLOStreamError) {
-			if se.Kind() == trae.ErrPlanLimit {
-				h.d.Pool.Cooldown(s.Provider, s.UID, hardCooldown, "plan limit")
-			}
-		})
-		return true
-	}
-	resp, aerr := trae.Aggregate(rc)
-	if aerr != nil {
-		var se *trae.SOLOStreamError
-		if errors.As(aerr, &se) && se.Kind() == trae.ErrPlanLimit {
-			h.d.Pool.Cooldown(s.Provider, s.UID, hardCooldown, "plan limit")
-			writeOpenAIError(w, http.StatusBadGateway, "plan_limit", "upstream plan limit reached")
-			return true
-		}
-		writeOpenAIError(w, http.StatusBadGateway, "upstream_parse", "upstream stream parse failed")
-		return true
-	}
-	writeJSON(w, http.StatusOK, resp)
-	return true
-}
-
-// chatViaWorkBuddy 单账号 WorkBuddy 请求。语义同 chatViaTrae。
 func (h *Handler) chatViaWorkBuddy(w http.ResponseWriter, acct *auth.Account, body []byte, stream bool) bool {
 	s := acct.Snap()
 	rc, status, respBody, err := h.d.WB.ChatStream(acct, body)

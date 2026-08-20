@@ -1,13 +1,11 @@
 // store.go 账号加密存储：accounts.dat（DPAPI 整体加密的 JSON）。
-// 同时支持导入旧版 traework2api / workbuddy2api 的明文 auths/*.json。
+// 同时支持导入旧版 workbuddy2api 的明文 auths/*.json。
 package auth
 
 import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 
 	"work2api-desktop/internal/secrets"
@@ -121,7 +119,7 @@ func (s *Store) Remove(provider, uid string) error {
 }
 
 // ---------------------------------------------------------------------------
-// 旧版导入（traework2api 的 trae-*.json / workbuddy2api 的 workbuddy-*.json）
+// 旧版导入（workbuddy2api 的 workbuddy-*.json）
 // ---------------------------------------------------------------------------
 
 // ImportLegacyFile 解析旧版明文 auth 文件并导入。返回导入的账号。
@@ -130,7 +128,7 @@ func (s *Store) ImportLegacyFile(path string) (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	a, err := ParseLegacy(raw, filepath.Base(path))
+	a, err := ParseLegacy(raw)
 	if err != nil {
 		return nil, err
 	}
@@ -140,13 +138,9 @@ func (s *Store) ImportLegacyFile(path string) (*Account, error) {
 	return a, nil
 }
 
-// ParseLegacy 兼容旧版两种磁盘形态（嵌套 {auth,account} / 扁平），
-// 按文件名前缀决定 provider。
-func ParseLegacy(raw []byte, filename string) (*Account, error) {
-	provider := ProviderTrae
-	if strings.HasPrefix(filename, "workbuddy") {
-		provider = ProviderWorkBuddy
-	}
+// ParseLegacy 兼容旧版磁盘形态（嵌套 {auth,account} / 扁平）。
+func ParseLegacy(raw []byte) (*Account, error) {
+	provider := ProviderWorkBuddy
 	var probe map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &probe); err != nil {
 		return nil, fmt.Errorf("legacy parse: %w", err)
@@ -160,9 +154,6 @@ func ParseLegacy(raw []byte, filename string) (*Account, error) {
 				RefreshToken string `json:"refreshToken"`
 				ExpiresAt    int64  `json:"expiresAt"`
 				Domain       string `json:"domain"`
-				ApiHost      string `json:"apiHost"`
-				MachineID    string `json:"machineId"`
-				DeviceID     string `json:"deviceId"`
 			} `json:"auth"`
 			Account struct {
 				UID          string `json:"uid"`
@@ -177,9 +168,6 @@ func ParseLegacy(raw []byte, filename string) (*Account, error) {
 		j.RefreshToken = n.Auth.RefreshToken
 		j.ExpiresAt = n.Auth.ExpiresAt
 		j.Domain = n.Auth.Domain
-		j.ApiHost = n.Auth.ApiHost
-		j.MachineID = n.Auth.MachineID
-		j.DeviceID = n.Auth.DeviceID
 		j.UID = n.Account.UID
 		j.EnterpriseID = n.Account.EnterpriseID
 		j.Nickname = n.Account.Nickname
@@ -189,9 +177,6 @@ func ParseLegacy(raw []byte, filename string) (*Account, error) {
 			RefreshToken string `json:"refreshToken"`
 			ExpiresAt    int64  `json:"expiresAt"`
 			Domain       string `json:"domain"`
-			ApiHost      string `json:"apiHost"`
-			MachineID    string `json:"machineId"`
-			DeviceID     string `json:"deviceId"`
 			UID          string `json:"uid"`
 			EnterpriseID string `json:"enterpriseId"`
 			Nickname     string `json:"nickname"`
@@ -203,9 +188,6 @@ func ParseLegacy(raw []byte, filename string) (*Account, error) {
 		j.RefreshToken = f.RefreshToken
 		j.ExpiresAt = f.ExpiresAt
 		j.Domain = f.Domain
-		j.ApiHost = f.ApiHost
-		j.MachineID = f.MachineID
-		j.DeviceID = f.DeviceID
 		j.UID = f.UID
 		j.EnterpriseID = f.EnterpriseID
 		j.Nickname = f.Nickname

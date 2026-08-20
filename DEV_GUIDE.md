@@ -19,7 +19,7 @@
 
 ## 1. 项目定位
 
-Work2API Desktop 是 [traework2api](https://github.com/Sliverkiss/traework2api) 与 [workbuddy2api](https://github.com/SliverKiss/workbuddy2api) 的 Windows 桌面单文件重构版，目标：
+Work2API Desktop 是 [workbuddy2api](https://github.com/SliverKiss/workbuddy2api) 的 Windows 桌面单文件重构版，目标：
 
 - **去掉 Bash / Docker / Python 依赖**：纯 Go + 前端单文件 exe 交付
 - **图形化与系统托盘**：关闭窗口后台常驻，托盘快速打开/退出
@@ -48,7 +48,7 @@ work2api-desktop/
     │   ├── core.go               # 装配 store/pool/上游，管理 API 服务与后台调度
     │   ├── config.go             # Config + RingLog + DataDir + sealed 读写
     │   ├── autostart.go          # 开机自启动（HKCU Run 注册表开关）
-    │   └── login.go              # 登录管理器（TRAE 回调 + WB 设备流）
+    │   └── login.go              # 登录管理器（WB 设备流）
     ├── auth/                     # 账号凭据模型与加密存储
     │   ├── account.go            # Account/Snapshot + UID 白名单
     │   └── store.go              # accounts.dat 读写 + 旧版导入
@@ -62,13 +62,6 @@ work2api-desktop/
     │   ├── server.go             # auth/models/chatCompletions/routeModel
     │   └── server_test.go        # 安全行为单测
     └── upstream/                # 上游客户端
-        ├── trae/                 # TRAE SOLO（llm_utils_chat 通道）
-        │   ├── client.go         # Chat/Refresh/FetchModels/Checkin/UserEntUsage
-        │   ├── constants.go      # 主机/端点/IDE 版本常量
-        │   ├── headers.go        # SOLOHeaders/UgHeaders/OAuthHeaders
-        │   ├── payload.go        # OpenAI → SOLO body 改写
-        │   ├── login.go          # BuildLoginURL + ParseCallback
-        │   └── sse.go            # SOLO SSE → OpenAI SSE（流式 + 聚合）
         └── workbuddy/            # WorkBuddy（CodeBuddy CN / workbuddy.ai）
             ├── client.go         # Chat/Refresh/FetchModels/Checkin/UserResource
             ├── constants.go      # CN/Global 主机与默认模型
@@ -90,7 +83,7 @@ work2api-desktop/
                               │ Wails Bind
 ┌──────────────────────────────────────────────────────────────┐
 │  internal/app (Core)                                          │
-│  - 装配 Store/Pool/Trae/WB/RingLog                            │
+│  - 装配 Store/Pool/WB/RingLog                            │
 │  - HTTP 服务生命周期（Start/Stop/RestartServer）             │
 │  - 后台调度：tokenRefreshLoop / creditsLoop / checkinLoop     │
 │  - 登录会话管理（loginMu 互斥，单并发）                       │
@@ -108,11 +101,11 @@ work2api-desktop/
                               │
         ┌─────────────────────┴─────────────────────┐
         │                                           │
-┌────────────────────┐                ┌──────────────────────┐
-│ upstream/trae      │                │ upstream/workbuddy   │
-│ llm_utils_chat     │                │ /v2/chat/completions │
-│ 自定义 SSE         │                │ OpenAI 兼容 SSE      │
-└────────────────────┘                └──────────────────────┘
+┌────────────────────┐
+│ upstream/workbuddy │
+│ /v2/chat/completions│
+│ OpenAI 兼容 SSE    │
+└────────────────────┘
 
 横切：internal/secrets（DPAPI 加密）被 auth/store 与 app/config 共用
 ```
@@ -133,7 +126,7 @@ main.main()
   │   ├─ LoadConfig(config.dat)         # 不存在则生成 APIKey 落盘
   │   ├─ auth.LoadStore(accounts.dat)
   │   ├─ NewRingLog(500)
-  │   ├─ trae.New / workbuddy.New      # 注入脱敏 log
+  │   ├─ workbuddy.New               # 注入脱敏 log
   │   └─ Pool.Sync(accounts)            # 内存池对齐
   ├─ core.Start()
   │   ├─ startServerLocked(port)        # net.Listen("tcp","127.0.0.1:port")
@@ -159,7 +152,6 @@ server.withAuth                          # secureEqualBearer 常数时间比较
 chatCompletions
   ├─ io.LimitReader(8MB) → 超 413 payload_too_large
   ├─ peek model → routeModel()
-  │     trae/x  → trae + 剥前缀
   │     wb/x    → workbuddy + 剥前缀
   │     默认    → config.defaultProvider (auto 跨上游挑)
   ├─ 重写 body.model = cleanModel
@@ -169,13 +161,7 @@ chatCompletions
         if acct.NeedsRefresh(10min):
             upstream.RefreshToken(acct)          # 失败 → Cooldown 10min 换号
             store.Save()
-        if provider == trae:
-            chatViaTrae(acct, body, stream)
-              ├─ trae.ChatStream → 200 → StreamWithError/Aggregate
-              ├─ ≥400 → Classify → Cooldown/Disable
-              └─ event:error code=1005 → Cooldown 12h (plan_limit)
-        else:
-            chatViaWorkBuddy(...)
+        chatViaWorkBuddy(acct, body, stream)
         # done=true 响应已写完直接 return
         # done=false 计入 tried 继续轮换
   ↓
@@ -203,25 +189,6 @@ tokenRefreshLoop (每 5min)
 `refreshLocked` 必须在持锁状态下完成网络调用 + 字段更新，确保读路径 `Snap()` 不会读到半成品。失败路径不修改字段，避免出现"刷新失败但 ExpiresAt 已被改"的不可用账号。
 
 ### 4.4 登录流程
-
-**TRAE（本地回调）：**
-```
-StartLogin("trae")
-  └─ listenLoopback(18080)              # 127.0.0.1 临时监听
-  └─ trae.BuildLoginURL(port)           # 生成 machine_id/device_id/auth_callback_url
-  └─ goroutine: http.Server{Handler: mux}
-       └─ /authorize handler:
-           ParseCallback(query)          # refreshToken/userInfo/userJwt
-           ExchangeTokenRaw(refreshToken) → token/newRefresh/expiresAt
-           GetUserInfo(token)
-           auth.ValidUID(uid)            # ^[A-Za-z0-9_-]{1,64}$
-           Store.Upsert(account)         # DPAPI 加密落盘
-           syncPool()
-           回调页：仅 "<h3>登录成功</h3>" 不回显参数
-  └─ 5min 超时自动关闭 listener
-  └─ 返回 URL → 前端在浏览器打开
-PollLoginStatus() 由前端轮询：TRAE 仅读 loginSession.status
-```
 
 **WorkBuddy（设备流）：**
 ```
@@ -263,7 +230,7 @@ PollLoginStatus()
 type Config struct {
     Port             int      // 默认 8317
     APIKey           string   // 首次启动自动生成
-    DefaultProvider  string   // trae | workbuddy | auto
+    DefaultProvider  string   // workbuddy | auto
     CheckinEnabled   bool
     CheckinTime      string   // HH:MM
     StartMinimized   bool
@@ -295,7 +262,7 @@ func (a *Account) Lock()/Unlock()  // 供 upstream 刷新持写锁
 - `LoadStore` 单条损坏不影响整体（跳过）
 - `Upsert` 按 provider+uid 去重
 - `Save` 持读锁导出 JSON → `secrets.SealFile`（DPAPI 加密 + 0600 原子 rename）
-- `ImportLegacyFile` 兼容旧版 traework2api/workbuddy2api 的明文 `auths/*.json`，导入后自动转为加密存储
+- `ImportLegacyFile` 兼容旧版 workbuddy2api 的明文 `auths/*.json`，导入后自动转为加密存储
 
 ### 5.3 internal/pool
 
@@ -346,7 +313,6 @@ func (a *Account) Lock()/Unlock()  // 供 upstream 刷新持写锁
 
 **模型前缀路由**：
 ```
-trae/glm-5.2  → provider=trae,    model=glm-5.2  (重写 body.model)
 wb/auto       → provider=workbuddy, model=auto
 glm-5.2       → defaultProvider (auto 跨上游挑)
 ```
@@ -360,54 +326,7 @@ glm-5.2       → defaultProvider (auto 跨上游挑)
 | session_dead           | Disable（永久）  |
 | 其他                   | NoteError 累计   |
 
-### 5.6 internal/upstream/trae
-
-**端点常量**（[internal/upstream/trae/constants.go](internal/upstream/trae/constants.go)）：
-- AgentHost：`https://trae-api-cn.mchost.guru` (chat/models)
-- UgHost：`https://api.trae.cn` (checkin/credits)
-- OAuthHost：`https://api.trae.com.cn` (token exchange/userinfo)
-- ConsoleHost：`https://www.trae.cn` (登录页)
-
-**三类请求头**：
-- `SOLOHeaders`：chat/models，含 `Authorization: Cloud-IDE-JWT <token>` + 设备头
-- `UgHeaders`：签到/积分，含 `X-User-Region: CN`
-- `OAuthHeaders`：token 交换，仅 UA（无签名）
-
-**积分计算**（[internal/upstream/trae/client.go](internal/upstream/trae/client.go)）：
-界面显示的 TRAE 积分 = **权益包剩余额度 + 签到积分池**（两套独立积分体系）：
-- 权益包剩余：`ide_user_ent_usage` 每个权益包返回 `quota.credits_limit`（总额度）与 `usage.credits_amount`（已用积分），剩余 = `Σ(limit - used)`，负数截断为 0。**注意：只累加 `credits_limit` 是错误实现**（原版 `internal/upstream/client.go` 的已知 bug），会把已耗尽的账号误显示为满额度。
-- 签到积分池：由 `checkin_credits/status` 的 `credits` 字段取得；`fetchCredits` 中该查询失败时降级只返回权益包额度，不阻断显示。
-
-**签到**（[client.go#CheckinStatus/CheckinClaim](internal/upstream/trae/client.go)）：
-- 状态与领取均校验业务码 `code`：`code != 0` 视为失败并返回真实错误（HTTP 200 不再被误判为"签到成功"）。**历史 bug**：原版 traework2api 的 `CheckinClaim` 不校验 `code`，把 HTTP 200 当成功 → 长期"假签到成功"，本桌面版已修复。
-- `claim` 返回 `code=9074`（"当前参与用户太多，请稍后再试"）时映射为哨兵错误 `ErrCheckinBusy`；`checkinOne` 收到后最多重试 3 次、间隔 5 秒（常量 `checkinClaimRetries`/`checkinClaimRetryWait`），仍失败则如实上报；其余错误码直接上报。
-
-> **⚠️ TRAE 签到 9074 的根因与不可修复性（实测结论，2026-08）**
->
-> `claim` 端点对 `x-device-id` 做 **ByteDance AHA 设备注册校验**。官方 Trae Work 客户端（`TRAE SOLO CN`，含 `aha_*.dll`/`metasecml.dll` 原生 AHA SDK）在启动/登录时通过 `iCubeDeviceRegister` 把设备指纹注册到字节侧，`storage.json` 中 `has_device_id_updated_to_aha: true` 即此流程的标记；其 `claim` 走 Electron `net.fetch` 普通 HTTPS（**无签名、无 cookie**，仅 `Content-Type`/`Authorization`/`x-device-id`/`x-device-brand`/`x-device-type`），能成功。
->
-> 本应用（以及任何 traework2api 衍生项目）的登录流程在 `login.go#BuildLoginURL` 生成的是**随机未注册** `device_id`；用此 id 调 `claim` 恒返回 `code=9074`（实测：3 账号 × 多次重试、换官方 `telemetry.machineId`、补全全部 SOLO 头均无效；`status` 因不校验设备注册而正常）。AHA 注册走私有原生 SDK，**无 HTTP 端点可替代**，故 TRAE 签到**无法在第三方纯 Go 客户端中真正成功**。
->
-> 应对：`CheckinClaim` 已如实返回 9074 错误（不再假成功），UI 会显示真实原因；如需实际领取签到积分，请在官方 Trae Work 客户端中完成。`status` 查询与权益包额度（`UserEntUsage`）仍可正常用于积分展示。
-
-**PrepareBody** ([internal/upstream/trae/payload.go](internal/upstream/trae/payload.go))：OpenAI → SOLO 改写
-- `stream=true` 强制（非流式由 server 端聚合）
-- `function=solo_work_lite`
-- `content` 字符串 → `[{type:text,text:c}]` 数组
-- `assistant.tool_calls[].function` → `function_call`（上游字段名）
-- `tool_choice` 对象 → 字符串（上游为 string 类型）
-- `tools[].function.parameters` 对象 → JSON string
-
-**SSE 转换** ([internal/upstream/trae/sse.go](internal/upstream/trae/sse.go))：
-- SOLO 自定义事件：`metadata | timing_cost | output | extra_info | token_usage | done | error`
-- `output` 事件解析出 `response`/`reasoning_content`/`tool_calls`，转为 OpenAI delta
-- `error` 事件 code=1005 → ErrPlanLimit → 触发 12h 冷却
-- `StreamWithError` 流式输出 OpenAI chunk，遇 error 仅暴露 code（脱敏不透传 message）
-- `Aggregate` 非流式聚合所有 delta 为单个 `chat.completion`
-
-**idleWatchdog**：包装 SSE ReadCloser，5 分钟无字节到达强制 `Close()`，防止上游停滞导致 goroutine 与连接永久悬挂（原版缺失的 DoS 面）。
-
-### 5.7 internal/upstream/workbuddy
+### 5.6 internal/upstream/workbuddy
 
 **双区域**：CN (`copilot.tencent.com` / `www.codebuddy.cn`) vs Global (`www.workbuddy.ai`)，由 `account.Domain` 判定。
 
@@ -425,14 +344,14 @@ glm-5.2       → defaultProvider (auto 跨上游挑)
 
 **FetchModels**：拉 `/console/enterprises/personal/models`，过滤出 `agents[].name == "cli"` 的模型交集。
 
-### 5.8 frontend
+### 5.7 frontend
 
 单文件 [App.vue](frontend/src/App.vue)，无路由无状态库：
 - **侧栏导航**：仪表盘 / 账号管理 / 设置 / 隐藏到托盘
 - **仪表盘**：4 项统计 + DeepSeek Harness 接入卡片 + 脱敏日志流
-- **账号管理**：登录按钮（TRAE/WB）、一键全签、列表（签到/积分/恢复/删除）；签到返回真实结果（成功/已签到/未生效/领取失败，9074 自动重试），TRAE 原始响应记入日志
+- **账号管理**：登录按钮（WB）、一键全签、列表（签到/积分/恢复/删除）；签到返回真实结果（成功/已签到/未生效/领取失败，原始响应记入日志）
 - **设置**：端口、默认上游、积分保留阈值、签到开关与时间、启动最小化、开机自启动（HKCU Run 注册表）
-- **模型页**：两上游模型列表（动态拉取 + 真实上下文窗口）、模型 ID 一键复制（带前缀可直填 Agent）、上游启用开关（关闭后不消耗其积分）；空模型名请求由 server 内置回退 DeepSeek v4 flash 正式版
+- **模型页**：WorkBuddy 模型列表（动态拉取 + 真实上下文窗口）、模型 ID 一键复制（带前缀可直填 Agent）、上游启用开关（关闭后不消耗其积分）；空模型名请求由 server 内置回退 DeepSeek v4 flash 正式版
 - **登录弹窗**：5min 超时倒计时、轮询 PollLoginStatus（2.5s 间隔）
 
 数据流：
@@ -452,11 +371,10 @@ glm-5.2       → defaultProvider (auto 跨上游挑)
 | 监听 0.0.0.0      | 仅 `net.Listen("tcp","127.0.0.1:port")`，无对外选项      | `app/core.go` |
 | 命令注入/路径遍历 | 纯 Go，UID 白名单 `^[A-Za-z0-9_-]{1,64}$`                | `auth/account.go` |
 | 数据竞争          | `Account.Snap()` 读锁快照 + 写锁整段刷新                  | `auth/account.go` `upstream/*/client.go` |
-| SSE 挂死          | `idleWatchdog` 5min 空闲强制断流                         | `upstream/trae/client.go` `upstream/workbuddy/client.go` |
+| SSE 挂死          | `idleWatchdog` 5min 空闲强制断流                         | `upstream/workbuddy/client.go` |
 | 日志泄敏          | 仅记 uid/状态码/错误分类，不打印上游 body 原文            | `upstream/*/client.go` `app/core.go#desensitizeErr` |
 | 请求体无限制      | `LimitReader(8MB)` + 413 拒绝                            | `server/server.go` |
-| 回调泄露 refreshToken | TRAE 回调页不回显参数；监听仅登录期间绑 loopback       | `app/login.go` `upstream/trae/login.go` |
-| 多账号串会话      | WorkBuddy 每次登录独立 cookie jar；`loginMu` 单并发     | `upstream/workbuddy/login.go` `app/login.go` |
+| 多账号串会话      | 每次登录独立 cookie jar；`loginMu` 单并发             | `upstream/workbuddy/login.go` `app/login.go` |
 | 原子性破坏        | `SealFile` tmp+rename；`refreshLocked` 失败不改字段      | `secrets/secrets.go` `upstream/*/client.go` |
 
 ## 7. 构建与调试
@@ -510,7 +428,7 @@ wails dev
 
 - **看不到日志**：UI 仪表盘「日志（脱敏）」实时流；后端 `RingLog.Snapshot(200)` 可逆序取最近 200 条
 - **端口冲突**：`RestartServer()` 已支持端口变更热重启，无需重启进程
-- **账号无法登录**：检查 `loginSession.status/err`；TRAE 回调 listener 默认 18080，被占用会自动随机端口
+- **账号无法登录**：检查 `loginSession.status/err`
 - **SSE 卡死**：5min `idleWatchdog` 兜底，超时后 `rc.Close()` 触发读返回错误
 - **凭据无法解密**：仅在生成它的同一 Windows 用户下可解密；换用户需重新登录
 
@@ -519,7 +437,7 @@ wails dev
 ### 8.1 新增上游 Provider
 
 1. 在 `internal/auth/account.go` 增加 `ProviderXxx` 常量
-2. 在 `internal/upstream/xxx/` 新建包：`client.go`/`constants.go`/`headers.go`/`payload.go`/`sse.go`/`login.go`，参考 `trae` 或 `workbuddy` 包结构
+2. 在 `internal/upstream/xxx/` 新建包：`client.go`/`constants.go`/`headers.go`/`payload.go`/`sse.go`/`login.go`，参考 `workbuddy` 包结构
 3. `internal/app/core.go` 增加字段 `Xxx *xxx.Client`，在 `NewCore` 装配、`Start` 注入 server.Deps、`refreshAllTokens`/`fetchCredits`/`checkinOne` 增加 switch 分支
 4. `internal/server/server.go` 在 `chatCompletions`/`providerModels` 增加 provider 分支，新增 `chatViaXxx`
 5. `api.go` 增加对应登录按钮调用，前端 `App.vue` 加按钮
@@ -534,7 +452,7 @@ wails dev
 修改 [internal/pool/pool.go#Pick](internal/pool/pool.go) 的 `best` 选择逻辑。例如：
 - 加权随机（避免单账号被持续选中）
 - 优先最低延迟账号（需在 Status 增加延迟字段并周期测量）
-- 故障转移优先级（trae 优先 fallback 到 workbuddy）
+- 故障转移优先级（按账号积分/健康度）
 
 ### 8.4 修改后台调度频率
 
@@ -578,10 +496,8 @@ const (
 | maxBodyBytes     | 8 MB                                 | `server/server.go` |
 | hardCooldown     | 12h                                  | `server/server.go` |
 | softCooldown     | 60s                                  | `server/server.go` |
-| streamIdleTimeout| 5min                                 | `upstream/trae/client.go` |
+| streamIdleTimeout| 5min                                 | `upstream/workbuddy/client.go` |
 | 签到繁忙重试     | 3 次 × 5s                            | `app/core.go` |
-| TRAE ClientID    | `en1oxy7wnw8j9n`                     | `upstream/trae/constants.go` |
 | WB ClientUA      | `CLI/2.63.2 CodeBuddy/2.63.2`        | `upstream/workbuddy/constants.go` |
 | secrets magic    | `W2AE1\x00`                          | `secrets/secrets.go` |
 | loginTimeout     | 5min                                 | `app/login.go` |
-| TRAE 回调端口    | 18080（被占用随机）                  | `app/login.go#listenLoopback` |

@@ -10,7 +10,6 @@ import (
 
 	"work2api-desktop/internal/auth"
 	"work2api-desktop/internal/pool"
-	"work2api-desktop/internal/upstream/trae"
 	"work2api-desktop/internal/upstream/workbuddy"
 )
 
@@ -23,7 +22,6 @@ func newTestHandler(t *testing.T, apiKey string) *Handler {
 	return New(Deps{
 		Pool:  pool.New(),
 		Store: store,
-		Trae:  trae.New(func(string, ...any) {}),
 		WB:    workbuddy.New(func(string, ...any) {}),
 		APIKey: func() string {
 			return apiKey
@@ -45,7 +43,6 @@ func TestHealthzNoAuth(t *testing.T) {
 func TestRejectMissingAndWrongKey(t *testing.T) {
 	h := newTestHandler(t, "k1")
 
-	// 未初始化（空 key）：503
 	h0 := newTestHandler(t, "")
 	gets := []string{"/v1/models"}
 	for _, path := range gets {
@@ -61,7 +58,6 @@ func TestRejectMissingAndWrongKey(t *testing.T) {
 		t.Fatalf("empty-key POST chat = %d, want 503", rec.Code)
 	}
 
-	// 缺 key / 错 key：401
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	r2 := httptest.NewRecorder()
 	h.ServeHTTP(r2, req)
@@ -77,7 +73,6 @@ func TestRejectMissingAndWrongKey(t *testing.T) {
 		t.Fatalf("wrong key = %d, want 401", r2.Code)
 	}
 
-	// 正确 key：200（空账号池）
 	req = httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	req.Header.Set("Authorization", "Bearer k1")
 	r2 = httptest.NewRecorder()

@@ -1,4 +1,4 @@
-// Package pool 统一账号池（TRAE + WorkBuddy 双上游）：内存状态机 + 挑号策略。
+// Package pool 统一账号池（WorkBuddy 上游）：内存状态机 + 挑号策略。
 //
 // 挑选策略：healthy 账号中剩余积分最多者；auto 模式跨 provider 全局挑。
 // 状态（冷却/禁用/积分）仅存内存：桌面单进程语义下重启即重置，
